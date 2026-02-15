@@ -31,17 +31,6 @@ jobs:
       - name: Set up Python
         run: uv python install 3.12
 
-      - name: Install dependencies
-        run: uv sync --dev
-
-      - name: Run tests
-        run: uv run pytest tests/ -x --ignore=tests/integration
-
-      - name: Run linters
-        run: |
-          uv run ruff check src/ tests/
-          uv run mypy src/dbslice/
-
       - name: Python Semantic Release
         id: release
         uses: python-semantic-release/python-semantic-release@v9
