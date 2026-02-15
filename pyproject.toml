@@ -97,7 +97,6 @@ ignore = ["E501"]
 [tool.semantic_release]
 version_toml = ["pyproject.toml:project.version"]
 branch = "master"
-build_command = "uv build"
 commit_message = "release: v{version}"
 tag_format = "v{version}"
 
