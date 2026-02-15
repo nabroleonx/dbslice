@@ -1,0 +1,58 @@
+name: Integration Tests
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  integration-tests:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: dbslice_test
+          POSTGRES_PASSWORD: test_password
+          POSTGRES_DB: dbslice_test
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Install dependencies
+        run: uv sync --dev
+
+      - name: Wait for PostgreSQL
+        run: |
+          until pg_isready -h localhost -p 5432 -U dbslice_test; do
+            echo "Waiting for PostgreSQL..."
+            sleep 2
+          done
+
+      - name: Run integration tests
+        env:
+          DBSLICE_TEST_DB: postgresql://dbslice_test:test_password@localhost:5432/dbslice_test
+        run: uv run pytest tests/integration/ -v --tb=short --color=yes
+
+      - name: Test CLI
+        env:
+          DBSLICE_TEST_DB: postgresql://dbslice_test:test_password@localhost:5432/dbslice_test
+        run: |
+          uv run dbslice --version
+          uv run dbslice --help

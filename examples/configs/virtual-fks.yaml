@@ -1,0 +1,119 @@
+# Example: Virtual Foreign Keys Configuration
+#
+# This example demonstrates how to define virtual foreign keys for relationships
+# that exist in your application but not in the database schema.
+
+database:
+  url: postgres://localhost:5432/django_app
+
+extraction:
+  default_depth: 3
+  direction: both
+  exclude_tables:
+    - django_migrations
+    - django_session
+
+# Virtual Foreign Keys
+# These define relationships that don't have actual database constraints
+virtual_foreign_keys:
+  # ====================
+  # Django GenericForeignKey Example
+  # ====================
+  # Django's ContentType framework allows generic relationships
+  # The notifications table can point to ANY model via content_type_id + object_id
+
+  - source_table: notifications
+    source_columns:
+      - object_id
+    target_table: orders
+    target_columns:
+      - id
+    description: "Generic FK to orders via ContentType (content_type_id=12)"
+    name: vfk_notifications_orders
+    is_nullable: false
+
+  - source_table: notifications
+    source_columns:
+      - object_id
+    target_table: users
+    target_columns:
+      - id
+    description: "Generic FK to users via ContentType (content_type_id=10)"
+    name: vfk_notifications_users
+    is_nullable: false
+
+  - source_table: notifications
+    source_columns:
+      - object_id
+    target_table: products
+    description: "Generic FK to products via ContentType"
+    # target_columns defaults to products.id (primary key)
+
+  # ====================
+  # Implicit Relationship Example
+  # ====================
+  # Legacy database where FK constraint was never added
+
+  - source_table: audit_log
+    source_columns:
+      - user_id
+    target_table: users
+    description: "Implicit FK: audit logs reference users without DB constraint"
+    is_nullable: true  # Some system logs don't have a user
+
+  # ====================
+  # Self-Referential Example
+  # ====================
+  # Hierarchical data without FK constraint
+
+  - source_table: categories
+    source_columns:
+      - parent_id
+    target_table: categories
+    description: "Category hierarchy: parent-child relationship"
+    is_nullable: true  # Root categories have NULL parent
+
+  # ====================
+  # Composite Key Example
+  # ====================
+  # Multi-tenant application with composite foreign key
+
+  - source_table: tenant_orders
+    source_columns:
+      - tenant_id
+      - customer_id
+    target_table: customers
+    target_columns:
+      - tenant_id
+      - id
+    description: "Multi-tenant composite FK: orders -> customers"
+    is_nullable: false
+
+  # ====================
+  # Cross-Schema Reference Example
+  # ====================
+  # Relationship to a table in a different schema
+
+  - source_table: app_cache
+    source_columns:
+      - external_user_id
+    target_table: auth_users  # In auth schema
+    description: "Cross-schema reference to authentication service"
+    is_nullable: true
+
+# Usage examples:
+#
+# 1. Extract a user with all notifications (via virtual FK):
+#    dbslice extract --config virtual-fks-example.yaml users.id=1
+#
+# 2. Extract notifications for a specific content type:
+#    dbslice extract --config virtual-fks-example.yaml \
+#      'notifications:content_type_id = 12 AND object_id = 1'
+#
+# 3. Extract audit trail for a user (via implicit FK):
+#    dbslice extract --config virtual-fks-example.yaml \
+#      users.email='alice@example.com' --direction down
+#
+# 4. Extract category tree (via self-referential virtual FK):
+#    dbslice extract --config virtual-fks-example.yaml \
+#      categories.slug='electronics' --depth 5

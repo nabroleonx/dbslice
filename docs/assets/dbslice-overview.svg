@@ -1,0 +1,229 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 980 390" font-family="'JetBrains Mono', 'Fira Code', ui-monospace, SFMono-Regular, monospace">
+  <defs>
+    <style>
+      .bg { fill: #0a0a0a; }
+      .grid-line { stroke: rgba(255,255,255,0.03); }
+      .box { fill: #0f0f0f; }
+      .box-header { fill: #1a1a1a; }
+      .card-inner { fill: #0a0a0a; }
+      .text-bright { fill: #fafafa; }
+      .text-muted { fill: #a1a1a1; }
+      .text-dim { fill: #525252; }
+      .border { stroke: #262626; }
+      .node-seed { fill: #1e1b4b; stroke: #6366f1; }
+      .node-d1 { fill: #0f0f0f; stroke: #3730a3; }
+      .node-d2 { fill: #0f0f0f; stroke: #262626; }
+      .edge-fk { stroke: #4f46e5; opacity: 0.4; }
+      .accent { fill: #6366f1; }
+      .green { fill: #22c55e; }
+      .green-stroke { stroke: #22c55e; }
+      .step-box { fill: #141414; stroke: #2a2a2a; }
+
+      @media (prefers-color-scheme: light) {
+        .bg { fill: #fafafa; }
+        .grid-line { stroke: rgba(0,0,0,0.04); }
+        .box { fill: #ffffff; }
+        .box-header { fill: #f5f5f5; }
+        .card-inner { fill: #f5f5f5; }
+        .text-bright { fill: #171717; }
+        .text-muted { fill: #737373; }
+        .text-dim { fill: #a3a3a3; }
+        .border { stroke: #e5e5e5; }
+        .node-seed { fill: #eef2ff; stroke: #6366f1; }
+        .node-d1 { fill: #f5f5ff; stroke: #a5b4fc; }
+        .node-d2 { fill: #ffffff; stroke: #d4d4d4; }
+        .edge-fk { stroke: #818cf8; opacity: 0.45; }
+        .green-stroke { stroke: #16a34a; }
+        .step-box { fill: #f0f0f0; stroke: #e0e0e0; }
+      }
+    </style>
+    <marker id="afk" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse">
+      <path d="M0 0L10 5L0 10z" fill="#4f46e5" opacity="0.5"/>
+    </marker>
+    <marker id="am" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0 0L10 5L0 10z" fill="#a1a1a1"/>
+    </marker>
+    <marker id="ag" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0 0L10 5L0 10z" fill="#22c55e"/>
+    </marker>
+    <marker id="astep" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse">
+      <path d="M0 0L10 5L0 10z" fill="#525252"/>
+    </marker>
+    <pattern id="g" width="40" height="40" patternUnits="userSpaceOnUse">
+      <path d="M40 0L0 0 0 40" fill="none" class="grid-line" stroke-width="1"/>
+    </pattern>
+  </defs>
+
+  <!-- Background -->
+  <rect width="980" height="390" class="bg" rx="6"/>
+  <rect width="980" height="390" fill="url(#g)" rx="6"/>
+
+  <!-- ==================== TITLE ==================== -->
+  <!-- dbslice icon: database cylinder with diagonal slice -->
+  <g transform="translate(384, 2)">
+    <ellipse cx="13" cy="7" rx="10" ry="3.5" stroke="#6366f1" stroke-width="1.5" fill="none"/>
+    <line x1="3" y1="7" x2="3" y2="19" stroke="#6366f1" stroke-width="1.5"/>
+    <line x1="23" y1="7" x2="23" y2="19" stroke="#6366f1" stroke-width="1.5"/>
+    <path d="M3 19 Q13 23 23 19" stroke="#6366f1" stroke-width="1.5" fill="none"/>
+    <path d="M3 13 Q13 17 23 13" stroke="#6366f1" stroke-width="0.7" fill="none" opacity="0.3"/>
+    <line x1="0" y1="23" x2="26" y2="1" stroke="#6366f1" stroke-width="2.5" stroke-linecap="round"/>
+  </g>
+  <text x="422" y="22" class="text-bright" font-size="12" font-weight="600" letter-spacing="0.1em">DBSLICE</text>
+  <text x="500" y="22" class="text-dim" font-size="9" letter-spacing="0.04em">SEED TO SUBSET</text>
+
+  <!-- ==================== LEFT: Seed Input ==================== -->
+  <rect x="30" y="80" width="148" height="95" rx="4" class="box border" stroke-width="1"/>
+  <rect x="30" y="80" width="148" height="14" rx="4" class="box-header"/>
+  <rect x="30" y="90" width="148" height="4" class="box-header"/>
+  <circle cx="41" cy="87" r="2.5" fill="#dc2626"/>
+  <circle cx="50" cy="87" r="2.5" fill="#f97316"/>
+  <circle cx="59" cy="87" r="2.5" fill="#22c55e"/>
+
+  <text x="42" y="108" class="text-dim" font-size="7">$</text>
+  <text x="52" y="108" class="text-muted" font-size="7">dbslice extract</text>
+  <text x="42" y="121" class="text-muted" font-size="7">--seed</text>
+  <text x="82" y="121" fill="#6366f1" font-size="7" font-weight="600">"orders.id=42"</text>
+  <text x="42" y="134" class="text-muted" font-size="7">--depth</text>
+  <text x="82" y="134" class="text-muted" font-size="7">3</text>
+
+  <text x="104" y="158" text-anchor="middle" class="text-dim" font-size="7" letter-spacing="0.06em">1 RECORD</text>
+
+  <!-- Arrow: Seed → Engine -->
+  <line x1="178" y1="128" x2="218" y2="128" stroke="#a1a1a1" stroke-width="1" marker-end="url(#am)"/>
+
+  <!-- ==================== CENTER: dbslice Engine ==================== -->
+  <rect x="224" y="58" width="400" height="225" rx="4" class="box" stroke="#6366f1" stroke-width="1.5"/>
+
+  <!-- Header -->
+  <rect x="224" y="58" width="400" height="24" rx="4" class="box-header"/>
+  <rect x="224" y="74" width="400" height="8" class="box-header"/>
+  <text x="424" y="74" text-anchor="middle" fill="#6366f1" font-size="9" font-weight="600" letter-spacing="0.08em">FK GRAPH TRAVERSAL</text>
+
+  <!-- Depth column labels -->
+  <text x="315" y="100" text-anchor="middle" class="text-dim" font-size="7">DEPTH 0</text>
+  <text x="430" y="100" text-anchor="middle" class="text-dim" font-size="7">DEPTH 1</text>
+  <text x="555" y="100" text-anchor="middle" class="text-dim" font-size="7">DEPTH 2</text>
+
+  <!-- Subtle depth separator lines -->
+  <line x1="373" y1="95" x2="373" y2="250" stroke="#262626" stroke-width="0.5" stroke-dasharray="3 4" opacity="0.5"/>
+  <line x1="493" y1="95" x2="493" y2="250" stroke="#262626" stroke-width="0.5" stroke-dasharray="3 4" opacity="0.3"/>
+
+  <!-- FK Edge lines (drawn first so nodes overlap them) -->
+  <line x1="355" y1="155" x2="393" y2="125" class="edge-fk" stroke-width="1.5" marker-end="url(#afk)"/>
+  <line x1="355" y1="170" x2="387" y2="170" class="edge-fk" stroke-width="1.5" marker-end="url(#afk)"/>
+  <line x1="355" y1="185" x2="389" y2="215" class="edge-fk" stroke-width="1.5" marker-end="url(#afk)"/>
+  <line x1="467" y1="125" x2="510" y2="125" class="edge-fk" stroke-width="1.5" marker-end="url(#afk)"/>
+  <line x1="473" y1="170" x2="515" y2="170" class="edge-fk" stroke-width="1.5" marker-end="url(#afk)"/>
+  <path d="M430 230 Q430 255 340 255 Q275 255 275 190 L275 175" class="edge-fk" stroke-width="1" stroke-dasharray="3 3" fill="none" opacity="0.25"/>
+  <text x="295" y="258" class="text-dim" font-size="6">CYCLE</text>
+
+  <!-- Graph Nodes -->
+  <rect x="275" y="158" width="80" height="24" rx="3" class="node-seed" stroke-width="1.5"/>
+  <text x="315" y="174" text-anchor="middle" fill="#a5b4fc" font-size="8" font-weight="600">orders</text>
+
+  <rect x="393" y="113" width="74" height="24" rx="3" class="node-d1" stroke-width="1"/>
+  <text x="430" y="129" text-anchor="middle" class="text-muted" font-size="8">users</text>
+
+  <rect x="387" y="158" width="86" height="24" rx="3" class="node-d1" stroke-width="1"/>
+  <text x="430" y="174" text-anchor="middle" class="text-muted" font-size="8">line_items</text>
+
+  <rect x="389" y="203" width="82" height="24" rx="3" class="node-d1" stroke-width="1"/>
+  <text x="430" y="219" text-anchor="middle" class="text-muted" font-size="8">payments</text>
+
+  <rect x="510" y="113" width="84" height="24" rx="3" class="node-d2" stroke-width="1"/>
+  <text x="552" y="129" text-anchor="middle" class="text-muted" font-size="8">addresses</text>
+
+  <rect x="515" y="158" width="80" height="24" rx="3" class="node-d2" stroke-width="1"/>
+  <text x="555" y="174" text-anchor="middle" class="text-muted" font-size="8">products</text>
+
+  <!-- Stats line at bottom of engine -->
+  <text x="424" y="257" text-anchor="middle" class="text-dim" font-size="7">847 rows collected</text>
+  <text x="424" y="272" text-anchor="middle" fill="#6366f1" font-size="8">6 tables</text>
+
+  <!-- Arrow: Engine → Output -->
+  <line x1="624" y1="170" x2="658" y2="170" stroke="#22c55e" stroke-width="1" marker-end="url(#ag)"/>
+  <text x="641" y="162" text-anchor="middle" fill="#22c55e" font-size="7">SORTED</text>
+
+  <!-- ==================== RIGHT: Output ==================== -->
+  <rect x="664" y="68" width="286" height="200" rx="4" class="box border" stroke-width="1"/>
+  <rect x="664" y="68" width="286" height="24" rx="4" class="box-header"/>
+  <rect x="664" y="84" width="286" height="8" class="box-header"/>
+  <text x="807" y="84" text-anchor="middle" fill="#22c55e" font-size="9" font-weight="600" letter-spacing="0.08em">OUTPUT</text>
+
+  <!-- SQL content lines -->
+  <text x="676" y="108" class="text-dim" font-size="7">-- topologically sorted</text>
+
+  <text x="676" y="124" class="text-muted" font-size="7.5"><tspan fill="#6366f1">INSERT INTO</tspan> addresses <tspan class="text-dim">...</tspan></text>
+  <text x="676" y="139" class="text-muted" font-size="7.5"><tspan fill="#6366f1">INSERT INTO</tspan> users <tspan class="text-dim">...</tspan></text>
+  <text x="676" y="154" class="text-muted" font-size="7.5"><tspan fill="#6366f1">INSERT INTO</tspan> products <tspan class="text-dim">...</tspan></text>
+  <text x="676" y="169" class="text-muted" font-size="7.5"><tspan fill="#6366f1">INSERT INTO</tspan> line_items <tspan class="text-dim">...</tspan></text>
+  <text x="676" y="184" class="text-muted" font-size="7.5"><tspan fill="#6366f1">INSERT INTO</tspan> orders <tspan class="text-dim">...</tspan></text>
+  <text x="676" y="199" class="text-muted" font-size="7.5"><tspan fill="#6366f1">INSERT INTO</tspan> payments <tspan class="text-dim">...</tspan></text>
+
+  <text x="676" y="216" class="text-dim" font-size="7">-- deferred FK updates</text>
+  <text x="676" y="231" class="text-muted" font-size="7.5"><tspan fill="#f97316">UPDATE</tspan> payments <tspan class="text-dim">SET ...</tspan></text>
+
+  <!-- Format labels -->
+  <rect x="676" y="244" width="32" height="14" rx="2" fill="#22c55e" opacity="0.15"/>
+  <text x="692" y="254" text-anchor="middle" fill="#22c55e" font-size="7" font-weight="600">SQL</text>
+  <rect x="714" y="244" width="38" height="14" rx="2" class="card-inner border" stroke-width="0.5"/>
+  <text x="733" y="254" text-anchor="middle" class="text-dim" font-size="7">JSON</text>
+  <rect x="758" y="244" width="32" height="14" rx="2" class="card-inner border" stroke-width="0.5"/>
+  <text x="774" y="254" text-anchor="middle" class="text-dim" font-size="7">CSV</text>
+
+  <!-- ==================== BOTTOM: Pipeline Steps ==================== -->
+  <!-- Faint connecting line behind everything -->
+  <line x1="68" y1="335" x2="912" y2="335" stroke="#262626" stroke-width="0.5" opacity="0.4"/>
+
+  <!-- Step 1: INTROSPECT -->
+  <rect x="38" y="320" width="108" height="30" rx="4" class="step-box" stroke-width="0.75"/>
+  <circle cx="54" cy="335" r="8" fill="#a1a1a1" opacity="0.08"/>
+  <text x="54" y="339" text-anchor="middle" class="text-muted" font-size="8" font-weight="600">1</text>
+  <text x="100" y="332" text-anchor="middle" class="text-muted" font-size="7" letter-spacing="0.03em">INTROSPECT</text>
+  <text x="100" y="342" text-anchor="middle" class="text-dim" font-size="6">schema + FKs</text>
+
+  <!-- Arrow 1→2 -->
+  <line x1="150" y1="335" x2="196" y2="335" stroke="#525252" stroke-width="0.75" marker-end="url(#astep)"/>
+
+  <!-- Step 2: TRAVERSE -->
+  <rect x="200" y="320" width="118" height="30" rx="4" class="step-box" stroke-width="0.75"/>
+  <circle cx="216" cy="335" r="8" fill="#6366f1" opacity="0.1"/>
+  <text x="216" y="339" text-anchor="middle" fill="#6366f1" font-size="8" font-weight="600">2</text>
+  <text x="267" y="332" text-anchor="middle" fill="#6366f1" font-size="7" letter-spacing="0.03em">TRAVERSE</text>
+  <text x="267" y="342" text-anchor="middle" class="text-dim" font-size="6">follow FK graph</text>
+
+  <!-- Arrow 2→3 -->
+  <line x1="322" y1="335" x2="368" y2="335" stroke="#525252" stroke-width="0.75" marker-end="url(#astep)"/>
+
+  <!-- Step 3: CYCLES -->
+  <rect x="372" y="320" width="118" height="30" rx="4" class="step-box" stroke-width="0.75"/>
+  <circle cx="388" cy="335" r="8" fill="#f97316" opacity="0.1"/>
+  <text x="388" y="339" text-anchor="middle" fill="#f97316" font-size="8" font-weight="600">3</text>
+  <text x="439" y="332" text-anchor="middle" fill="#f97316" font-size="7" letter-spacing="0.03em">CYCLES</text>
+  <text x="439" y="342" text-anchor="middle" class="text-dim" font-size="6">break circular refs</text>
+
+  <!-- Arrow 3→4 -->
+  <line x1="494" y1="335" x2="540" y2="335" stroke="#525252" stroke-width="0.75" marker-end="url(#astep)"/>
+
+  <!-- Step 4: SORT -->
+  <rect x="544" y="320" width="108" height="30" rx="4" class="step-box" stroke-width="0.75"/>
+  <circle cx="560" cy="335" r="8" fill="#a78bfa" opacity="0.1"/>
+  <text x="560" y="339" text-anchor="middle" fill="#a78bfa" font-size="8" font-weight="600">4</text>
+  <text x="606" y="332" text-anchor="middle" fill="#a78bfa" font-size="7" letter-spacing="0.03em">TOPO SORT</text>
+  <text x="606" y="342" text-anchor="middle" class="text-dim" font-size="6">dependency order</text>
+
+  <!-- Arrow 4→5 -->
+  <line x1="656" y1="335" x2="702" y2="335" stroke="#525252" stroke-width="0.75" marker-end="url(#astep)"/>
+
+  <!-- Step 5: OUTPUT -->
+  <rect x="706" y="320" width="100" height="30" rx="4" class="step-box" stroke-width="0.75"/>
+  <circle cx="722" cy="335" r="8" fill="#22c55e" opacity="0.1"/>
+  <text x="722" y="339" text-anchor="middle" fill="#22c55e" font-size="8" font-weight="600">5</text>
+  <text x="764" y="332" text-anchor="middle" fill="#22c55e" font-size="7" letter-spacing="0.03em">OUTPUT</text>
+  <text x="764" y="342" text-anchor="middle" class="text-dim" font-size="6">SQL / JSON / CSV</text>
+
+  <!-- Result indicator at far right -->
+  <text x="836" y="332" class="text-dim" font-size="7">→</text>
+  <text x="860" y="328" fill="#22c55e" font-size="7" opacity="0.6">ready to</text>
+  <text x="860" y="340" fill="#22c55e" font-size="7" opacity="0.6">import</text>
+</svg>

@@ -1,0 +1,49 @@
+# dbslice configuration file
+# https://github.com/nabroleonx/dbslice
+
+# Database connection settings
+database:
+  url: postgres://user:password@localhost:5432/myapp
+
+# Extraction behavior
+extraction:
+  default_depth: 3
+  direction: both  # up, down, or both
+  exclude_tables:
+    - logs
+    - audit_trail
+    - sessions
+  # max_rows_per_table: 10000  # Uncomment to limit rows per table
+
+# Anonymization settings
+anonymization:
+  enabled: true
+  # seed: custom_seed_for_deterministic_anonymization
+  fields:
+    users.email: email
+    users.phone: phone_number
+    users.first_name: first_name
+    users.last_name: last_name
+    customers.address: address
+    customers.city: city
+    customers.postal_code: postcode
+    orders.ip_address: ipv4
+
+# Output format settings
+output:
+  format: sql  # sql, json, or csv
+  include_transaction: true
+  include_drop_tables: false
+
+# Per-table overrides
+tables:
+  # Skip tables entirely
+  temp_data:
+    skip: true
+
+  # Limit rows from specific tables
+  large_historical_table:
+    max_rows: 1000
+
+  event_logs:
+    skip: true

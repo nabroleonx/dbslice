@@ -1,0 +1,35 @@
+# Example: Extraction with anonymization
+# Use this when extracting data that contains PII
+#
+# Usage:
+#   dbslice extract --config examples/configs/with-anonymization.yaml --seed "orders.id=123"
+
+database:
+  url: ${DATABASE_URL}  # Set via environment variable
+
+extraction:
+  default_depth: 3
+  direction: both
+
+anonymization:
+  enabled: true
+  # Map sensitive fields to Faker providers
+  fields:
+    users.email: email
+    users.phone: phone_number
+    users.first_name: first_name
+    users.last_name: last_name
+    users.address: address
+    orders.shipping_address: address
+    customers.ssn: ssn
+    payments.card_number: credit_card_number
+  # NULL out these patterns entirely
+  patterns:
+    - "*password*": null
+    - "*token*": null
+    - "*secret*": null
+    - "*api_key*": null
+
+output:
+  format: sql
+  include_transaction: true

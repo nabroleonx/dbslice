@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none">
+  <style>
+    .stroke { stroke: #6366f1; }
+    .fill { fill: #6366f1; }
+    @media (prefers-color-scheme: light) {
+      .stroke { stroke: #4f46e5; }
+      .fill { fill: #4f46e5; }
+    }
+  </style>
+  <!-- Database cylinder -->
+  <ellipse cx="32" cy="18" rx="20" ry="8" class="stroke" stroke-width="3" fill="none"/>
+  <line x1="12" y1="18" x2="12" y2="46" class="stroke" stroke-width="3"/>
+  <line x1="52" y1="18" x2="52" y2="46" class="stroke" stroke-width="3"/>
+  <path d="M12 46 Q32 54 52 46" class="stroke" stroke-width="3" fill="none"/>
+  <!-- Data row hint -->
+  <path d="M12 32 Q32 40 52 32" class="stroke" stroke-width="1.5" fill="none" opacity="0.25"/>
+  <!-- The slice -->
+  <line x1="6" y1="56" x2="58" y2="6" class="stroke" stroke-width="5" stroke-linecap="round"/>
+</svg>
