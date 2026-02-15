@@ -124,9 +124,9 @@ class GraphTraverser:
         while queue:
             table, pks, depth, direction = queue.popleft()
 
-            if depth >= config.max_depth:
+            if depth >= config.max_depth and direction == "down":
                 logger.debug(
-                    "Max depth reached, skipping traversal",
+                    "Max depth reached for downward traversal, skipping",
                     table=table,
                     depth=depth,
                     max_depth=config.max_depth,
@@ -211,21 +211,6 @@ class GraphTraverser:
             )
 
             queue.append((parent_table, new_pks, depth + 1, "up"))
-
-            # IMPORTANT: When direction=BOTH, also traverse DOWN from discovered parent
-            # This ensures we get children of tables discovered via UP traversal
-            if config.direction == TraversalDirection.BOTH:
-                if parent_table not in visited_down:
-                    visited_down[parent_table] = set()
-                new_for_down = new_pks - visited_down[parent_table]
-                if new_for_down:
-                    visited_down[parent_table].update(new_for_down)
-                    logger.debug(
-                        "Scheduling downward traversal from parent for complete extraction",
-                        table=parent_table,
-                        records=len(new_for_down),
-                    )
-                    queue.append((parent_table, new_for_down, depth + 1, "down"))
 
     def _traverse_down(
         self,

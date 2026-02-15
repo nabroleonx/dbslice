@@ -107,19 +107,19 @@ class TestGraphTraverser:
         assert "order_items" in result.records  # children
 
     def test_depth_limit(self, sample_schema, mock_adapter):
-        """Depth limit should prevent deep traversal."""
+        """Depth limit should only restrict DOWN traversal, not UP."""
         traverser = GraphTraverser(sample_schema, mock_adapter)
         config = TraversalConfig(
-            max_depth=0,  # Only seed, no traversal
+            max_depth=0,  # Only restricts DOWN direction
             direction=TraversalDirection.UP,
         )
 
         result = traverser.traverse("orders", {(1,)}, config)
 
-        # Should only have orders (seed)
+        # Should have orders (seed)
         assert "orders" in result.records
-        # Should NOT have users (would require depth 1)
-        assert "users" not in result.records
+        # UP traversal is not depth-limited, so users should be found
+        assert "users" in result.records
 
     def test_exclude_tables(self, sample_schema, mock_adapter):
         """Excluded tables should be skipped."""

@@ -513,7 +513,11 @@ class TestTraversalDepth:
     """Test FK traversal depth limiting."""
 
     def test_depth_zero(self, ecommerce_schema: dict, extract_config_factory):
-        """Test that depth=0 only extracts seed rows."""
+        """Test that depth=0 blocks DOWN traversal but allows UP for referential integrity.
+
+        Depth limit only restricts DOWN traversal. UP traversal always proceeds
+        to ensure all parent records are included (preventing FK violations).
+        """
         config = extract_config_factory(
             seeds=[SeedSpec.parse("orders.id=1")],
             direction=TraversalDirection.BOTH,
@@ -523,12 +527,14 @@ class TestTraversalDepth:
         engine = ExtractionEngine(config)
         result, schema = engine.extract()
 
-        # Should only have the order itself
+        # Should have the order itself
         assert len(result.tables["orders"]) == 1
         assert result.tables["orders"][0]["id"] == 1
 
-        # Should not have related tables
-        assert "users" not in result.tables or len(result.tables["users"]) == 0
+        # UP traversal still finds parent user (depth limit only applies to DOWN)
+        assert "users" in result.tables and len(result.tables["users"]) == 1
+
+        # DOWN traversal is blocked at depth 0, so no child order_items
         assert "order_items" not in result.tables or len(result.tables["order_items"]) == 0
 
     def test_depth_one(self, ecommerce_schema: dict, extract_config_factory):

@@ -21,7 +21,8 @@ Copying an entire production database to your machine is infeasible. But reprodu
 ## Quick Start
 
 ```bash
-uv add dbslice
+# Install globally
+uv tool install dbslice   # or: pip install dbslice
 
 # Extract an order and all related records
 dbslice extract postgres://localhost/myapp --seed "orders.id=12345" > subset.sql
