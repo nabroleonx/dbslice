@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/assets/logo.svg" alt="dbslice logo" width="128">
+  <img src="https://raw.githubusercontent.com/nabroleonx/dbslice/main/docs/assets/logo.png" alt="dbslice logo" width="128">
 </p>
 
 # dbslice
@@ -15,7 +15,7 @@ Extract minimal, referentially-intact database subsets for local development and
 Copying an entire production database to your machine is infeasible. But reproducing a bug often requires having the exact data that caused it. **dbslice** solves this by extracting only the records you need, following foreign key relationships to ensure referential integrity.
 
 <p align="center">
-  <img src="docs/assets/dbslice-overview.svg" alt="dbslice — seed to subset">
+  <img src="https://raw.githubusercontent.com/nabroleonx/dbslice/main/docs/assets/dbslice-overview.png" alt="dbslice — seed to subset">
 </p>
 
 ## Quick Start
