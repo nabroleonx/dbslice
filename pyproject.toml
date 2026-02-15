@@ -93,3 +93,15 @@ line-length = 100
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "W", "UP"]
 ignore = ["E501"]
+
+[tool.semantic_release]
+version_toml = ["pyproject.toml:project.version"]
+branch = "master"
+build_command = "uv build"
+commit_message = "release: v{version}"
+tag_format = "v{version}"
+
+[tool.semantic_release.commit_parser_options]
+allowed_tags = ["feat", "fix", "perf", "refactor", "build"]
+minor_tags = ["feat"]
+patch_tags = ["fix", "perf", "refactor", "build"]

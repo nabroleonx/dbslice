@@ -1,18 +1,29 @@
-name: Publish to PyPI
+name: Release & Publish
 
 on:
-  release:
-    types: [published]
+  workflow_run:
+    workflows: [ "Integration Tests" ]
+    types: [ completed ]
+    branches: [ main, master ]
+  workflow_dispatch:
 
 permissions:
-  id-token: write  # Required for Trusted Publishers
+  contents: write
+  id-token: write
 
 jobs:
-  publish:
+  release:
     runs-on: ubuntu-latest
-    environment: pypi
+    concurrency: release
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      github.event.workflow_run.conclusion == 'success'
+
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Install uv
         uses: astral-sh/setup-uv@v4
@@ -31,8 +42,18 @@ jobs:
           uv run ruff check src/ tests/
           uv run mypy src/dbslice/
 
+      - name: Python Semantic Release
+        id: release
+        uses: python-semantic-release/python-semantic-release@v9
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Build package
+        if: steps.release.outputs.released == 'true'
         run: uv build
 
       - name: Publish to PyPI
+        if: steps.release.outputs.released == 'true'
         uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          password: ${{ secrets.PYPI_API_TOKEN }}
