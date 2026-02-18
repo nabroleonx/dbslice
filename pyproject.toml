@@ -55,7 +55,7 @@ dbslice = "dbslice.cli:app"
 
 [project.urls]
 Homepage = "https://github.com/nabroleonx/dbslice"
-Documentation = "https://github.com/nabroleonx/dbslice#readme"
+Documentation = "https://nabroleonx.github.io/dbslice/"
 Repository = "https://github.com/nabroleonx/dbslice"
 Issues = "https://github.com/nabroleonx/dbslice/issues"
 

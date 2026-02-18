@@ -1,4 +1,5 @@
 site_name: dbslice
+site_url: https://nabroleonx.github.io/dbslice/
 site_description: Extract minimal, referentially-intact database subsets for local development
 site_author: dbslice contributors
 
