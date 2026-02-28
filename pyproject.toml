@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "dbslice"
-version = "0.1.3"
+version = "0.2.0"
 description = "Extract minimal, referentially-intact database subsets for local development"
 readme = "README.md"
 license = "MIT"

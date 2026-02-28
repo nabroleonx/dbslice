@@ -1,6 +1,15 @@
 # CHANGELOG
 
 
+## v0.2.0 (2026-02-28)
+
+### Features
+
+- Add schema selection support for PostgreSQL adapter
+  ([#2](https://github.com/nabroleonx/dbslice/pull/2),
+  [`25b483c`](https://github.com/nabroleonx/dbslice/commit/25b483cbe80f041033330f3e0d9aa8fdcb488cc5))
+
+
 ## v0.1.3 (2026-02-15)
 
 ### Bug Fixes
