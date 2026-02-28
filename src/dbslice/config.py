@@ -290,3 +290,4 @@ class ExtractConfig:
     streaming_threshold: int = 50000  # Auto-enable streaming above this row count
     streaming_chunk_size: int = 1000  # Rows per chunk in streaming mode
     virtual_foreign_keys: list[VirtualForeignKey] = field(default_factory=list)
+    schema: str | None = None  # PostgreSQL schema name (default: public)

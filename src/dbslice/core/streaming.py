@@ -80,6 +80,7 @@ class StreamingExtractionEngine:
             include_transaction=True,
             include_truncate=False,
             disable_fk_checks=False,
+            schema=config.schema,
         )
 
         self.stats: dict[str, int] = {}

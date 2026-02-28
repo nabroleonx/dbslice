@@ -17,11 +17,13 @@ class SQLGenerator:
         include_transaction: bool = True,
         include_truncate: bool = False,
         disable_fk_checks: bool = False,
+        schema: str | None = None,
     ):
         self.db_type = db_type
         self.include_transaction = include_transaction
         self.include_truncate = include_truncate
         self.disable_fk_checks = disable_fk_checks
+        self.schema = schema
 
     def generate(
         self,
@@ -55,6 +57,10 @@ class SQLGenerator:
         if broken_fks:
             lines.append(f"-- Circular references detected: {len(broken_fks)} FK(s) broken")
         lines.append("")
+
+        if self.schema and self.schema != "public":
+            lines.append(f"SET search_path TO {self._quote_identifier(self.schema)}, public;")
+            lines.append("")
 
         if self.disable_fk_checks:
             lines.append(self._disable_fk_checks())
