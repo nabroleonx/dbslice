@@ -59,6 +59,9 @@ class DatabaseConfig:
     url: str | None = None
     """Database connection URL (can be overridden by CLI)."""
 
+    schema: str | None = None
+    """PostgreSQL schema name (default: 'public')."""
+
 
 @dataclass
 class ExtractionConfig:
@@ -228,6 +231,7 @@ class DbsliceConfig:
 
         database = DatabaseConfig(
             url=database_data.get("url"),
+            schema=database_data.get("schema"),
         )
 
         extraction_data = data.get("extraction", {})
@@ -366,6 +370,7 @@ class DbsliceConfig:
         validate: bool = True,
         fail_on_validation_error: bool = False,
         profile: bool = False,
+        schema: str | None = None,
     ) -> ExtractConfig:
         """
         Convert to ExtractConfig for use by the extraction engine.
@@ -389,6 +394,7 @@ class DbsliceConfig:
             validate: Enable validation (from CLI)
             fail_on_validation_error: Fail on validation errors (from CLI)
             profile: Enable profiling (from CLI)
+            schema: PostgreSQL schema name override (from CLI)
 
         Returns:
             ExtractConfig ready for extraction
@@ -463,6 +469,8 @@ class DbsliceConfig:
                 )
             )
 
+        final_schema = schema or self.database.schema
+
         return ExtractConfig(
             database_url=final_url,
             seeds=seeds,
@@ -481,6 +489,7 @@ class DbsliceConfig:
             fail_on_validation_error=fail_on_validation_error,
             profile=profile,
             virtual_foreign_keys=virtual_fks,
+            schema=final_schema,
         )
 
     def to_yaml(self, include_comments: bool = True) -> str:
@@ -513,6 +522,10 @@ class DbsliceConfig:
                 )
         else:
             output.append("  # url: postgres://user:pass@localhost:5432/myapp")
+        if self.database.schema:
+            output.append(f"  schema: {self.database.schema}")
+        elif include_comments:
+            output.append("  # schema: public  # PostgreSQL schema (default: public)")
         output.append("")
 
         if include_comments:

@@ -49,6 +49,13 @@ dbslice extract [OPTIONS] DATABASE_URL
 
 #### Options
 
+##### Connection Options
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `--schema` | TEXT | `public` | PostgreSQL schema name |
+| `--config`, `-c` | PATH | - | Path to YAML configuration file |
+
 ##### Seed Configuration
 
 | Option | Type | Default | Description |
@@ -349,6 +356,7 @@ dbslice init [OPTIONS] DATABASE_URL
 |--------|------|---------|-------------|
 | `--out-file`, `-f` | PATH | `dbslice.yaml` | Output config file path |
 | `--detect-sensitive` / `--no-detect-sensitive` | FLAG | Enabled | Auto-detect sensitive fields |
+| `--schema` | TEXT | `public` | PostgreSQL schema name |
 
 #### Examples
 
@@ -365,6 +373,9 @@ dbslice init postgresql://localhost/myapp --no-detect-sensitive
 # Generate for remote database
 dbslice init postgresql://user:pass@prod.example.com:5432/myapp \
   -f config/prod.yaml
+
+# Generate config for a specific schema
+dbslice init postgresql://localhost/myapp --schema myschema
 ```
 
 #### Generated Config Structure
@@ -425,6 +436,7 @@ dbslice inspect [OPTIONS] DATABASE_URL
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | `--table`, `-t` | TEXT | - | Show details for a specific table |
+| `--schema` | TEXT | `public` | PostgreSQL schema name |
 
 #### Examples
 
@@ -433,6 +445,9 @@ dbslice inspect [OPTIONS] DATABASE_URL
 ```bash
 # List all tables and foreign keys
 dbslice inspect postgresql://localhost/myapp
+
+# Inspect a specific schema
+dbslice inspect postgresql://localhost/myapp --schema myschema
 ```
 
 Output:

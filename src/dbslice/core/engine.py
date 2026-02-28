@@ -158,7 +158,10 @@ class ExtractionEngine:
         from dbslice.adapters.postgresql import PostgreSQLAdapter
 
         if db_config.db_type.value == "postgresql":
-            self.adapter = PostgreSQLAdapter(profiler=profiler)
+            self.adapter = PostgreSQLAdapter(
+                profiler=profiler,
+                schema=self.config.schema,
+            )
         else:
             self.adapter = get_adapter_for_url(self.config.database_url)
 

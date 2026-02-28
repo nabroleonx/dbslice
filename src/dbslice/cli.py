@@ -175,6 +175,7 @@ def _build_extract_config(
     validate: bool,
     fail_on_validation_error: bool,
     profile: bool,
+    schema: str | None = None,
 ) -> ExtractConfig:
     """
     Build ExtractConfig from validated CLI parameters.
@@ -217,6 +218,7 @@ def _build_extract_config(
         validate=validate,
         fail_on_validation_error=fail_on_validation_error,
         profile=profile,
+        schema=schema,
     )
 
 
@@ -366,6 +368,7 @@ def _generate_and_output_sql(
     no_progress: bool,
     console: Console,
     stdout_console: Console,
+    db_schema: str | None = None,
 ) -> None:
     """
     Generate SQL output and write to file or stdout.
@@ -378,11 +381,12 @@ def _generate_and_output_sql(
         no_progress: Whether progress output is disabled
         console: Rich console for progress/status messages
         stdout_console: Console for SQL output to stdout
+        db_schema: PostgreSQL schema name for SET search_path
     """
     db_config = parse_database_url(database_url)
 
     # Use schema from extraction (no reconnection needed)
-    generator = SQLGenerator(db_type=db_config.db_type)
+    generator = SQLGenerator(db_type=db_config.db_type, schema=db_schema)
     sql_output = generator.generate(
         result.tables,
         result.insert_order,
@@ -582,6 +586,7 @@ def _handle_output_format(
     no_progress: bool,
     console: Console,
     stdout_console: Console,
+    db_schema: str | None = None,
 ) -> None:
     """
     Handle output generation based on configured format.
@@ -612,6 +617,7 @@ def _handle_output_format(
             no_progress,
             console,
             stdout_console,
+            db_schema=db_schema,
         )
     elif output_format == OutputFormat.JSON:
         _generate_and_output_json(
@@ -816,6 +822,13 @@ def extract(
             help="Number of rows to fetch per chunk in streaming mode (default: 1000)",
         ),
     ] = 1000,
+    schema: Annotated[
+        str | None,
+        typer.Option(
+            "--schema",
+            help="PostgreSQL schema name (default: 'public')",
+        ),
+    ] = None,
 ):
     """
     Extract a database subset starting from seed record(s).
@@ -927,6 +940,7 @@ def extract(
                 verbose=verbose,
                 dry_run=dry_run,
                 no_progress=no_progress,
+                schema=schema,
             )
             output_format = extract_config.output_format
         else:
@@ -948,6 +962,7 @@ def extract(
                 validate=validate,
                 fail_on_validation_error=fail_on_validation_error,
                 profile=profile,
+                schema=schema,
             )
             extract_config.stream = stream
             extract_config.streaming_threshold = stream_threshold
@@ -974,6 +989,7 @@ def extract(
             no_progress=no_progress,
             console=console,
             stdout_console=stdout_console,
+            db_schema=extract_config.schema,
         )
 
     except ConnectionError as e:
@@ -1045,6 +1061,13 @@ def init(
             help="Auto-detect sensitive fields (email, phone, etc.)",
         ),
     ] = True,
+    schema: Annotated[
+        str | None,
+        typer.Option(
+            "--schema",
+            help="PostgreSQL schema name (default: 'public')",
+        ),
+    ] = None,
 ):
     """
     Generate a configuration file from database schema.
@@ -1071,6 +1094,7 @@ def init(
             console.print(f"[red]Validation Error:[/red] {e}")
             raise typer.Exit(1)
 
+        from dbslice.adapters.postgresql import PostgreSQLAdapter
         from dbslice.config_file import (
             AnonymizationConfig,
             DatabaseConfig,
@@ -1078,31 +1102,35 @@ def init(
             ExtractionConfig,
             OutputConfig,
         )
-        from dbslice.utils.connection import get_adapter_for_url
+        from dbslice.utils.connection import get_adapter_for_url, parse_database_url
 
+        db_config = parse_database_url(database_url)
         with console.status("[bold blue]Connecting to database...[/bold blue]"):
-            adapter = get_adapter_for_url(database_url)
+            if db_config.db_type.value == "postgresql" and schema:
+                adapter = PostgreSQLAdapter(schema=schema)
+            else:
+                adapter = get_adapter_for_url(database_url)
             adapter.connect(database_url)
 
         try:
             with console.status("[bold blue]Introspecting schema...[/bold blue]"):
-                schema = adapter.get_schema()
+                db_schema = adapter.get_schema()
 
             console.print(
-                f"[green]Found {len(schema.tables)} tables, {len(schema.edges)} foreign keys[/green]"
+                f"[green]Found {len(db_schema.tables)} tables, {len(db_schema.edges)} foreign keys[/green]"
             )
 
             sensitive_fields = {}
             if detect_sensitive:
                 console.print("[dim]Detecting sensitive fields...[/dim]")
-                sensitive_fields = _detect_sensitive_fields(schema)
+                sensitive_fields = _detect_sensitive_fields(db_schema)
                 if sensitive_fields:
                     console.print(
                         f"[yellow]Detected {len(sensitive_fields)} sensitive fields[/yellow]"
                     )
 
             config = DbsliceConfig(
-                database=DatabaseConfig(url=database_url),
+                database=DatabaseConfig(url=database_url, schema=schema),
                 extraction=ExtractionConfig(
                     default_depth=DEFAULT_TRAVERSAL_DEPTH,
                     direction="both",
@@ -1226,6 +1254,13 @@ def inspect(
             help="Show details for a specific table",
         ),
     ] = None,
+    schema: Annotated[
+        str | None,
+        typer.Option(
+            "--schema",
+            help="PostgreSQL schema name (default: 'public')",
+        ),
+    ] = None,
 ):
     """
     Inspect database schema without extracting data.
@@ -1243,18 +1278,23 @@ def inspect(
             console.print(f"[red]Validation Error:[/red] {e}")
             raise typer.Exit(1)
 
-        from dbslice.utils.connection import get_adapter_for_url
+        from dbslice.adapters.postgresql import PostgreSQLAdapter
+        from dbslice.utils.connection import get_adapter_for_url, parse_database_url
 
+        db_config = parse_database_url(database_url)
         with console.status("[bold blue]Connecting to database...[/bold blue]"):
-            adapter = get_adapter_for_url(database_url)
+            if db_config.db_type.value == "postgresql" and schema:
+                adapter = PostgreSQLAdapter(schema=schema)
+            else:
+                adapter = get_adapter_for_url(database_url)
             adapter.connect(database_url)
 
         try:
             with console.status("[bold blue]Introspecting schema...[/bold blue]"):
-                schema = adapter.get_schema()
+                db_schema = adapter.get_schema()
 
             if table:
-                table_info = schema.get_table(table)
+                table_info = db_schema.get_table(table)
                 if not table_info:
                     console.print(f"[red]Table '{table}' not found[/red]")
                     raise typer.Exit(1)
@@ -1268,7 +1308,7 @@ def inspect(
                     pk = " [PK]" if col.name in table_info.primary_key else ""
                     console.print(f"    {col.name}: {col.data_type} {nullable}{pk}")
 
-                parents = schema.get_parents(table)
+                parents = db_schema.get_parents(table)
                 if parents:
                     console.print("\n  [bold]Foreign keys (references):[/bold]")
                     for parent_table, fk in parents:
@@ -1277,7 +1317,7 @@ def inspect(
                             f"    {', '.join(fk.source_columns)} -> [cyan]{parent_table}[/cyan].{', '.join(fk.target_columns)} ({nullable})"
                         )
 
-                children = schema.get_children(table)
+                children = db_schema.get_children(table)
                 if children:
                     console.print("\n  [bold]Referenced by:[/bold]")
                     for child_table, fk in children:
@@ -1286,14 +1326,14 @@ def inspect(
                         )
 
             else:
-                console.print(f"\n[bold]Tables ({len(schema.tables)})[/bold]")
-                for name in sorted(schema.tables.keys()):
-                    t = schema.tables[name]
+                console.print(f"\n[bold]Tables ({len(db_schema.tables)})[/bold]")
+                for name in sorted(db_schema.tables.keys()):
+                    t = db_schema.tables[name]
                     pk_str = ", ".join(t.primary_key) if t.primary_key else "no PK"
                     console.print(f"  {name} ({pk_str})")
 
-                console.print(f"\n[bold]Foreign Keys ({len(schema.edges)})[/bold]")
-                for fk in schema.edges:
+                console.print(f"\n[bold]Foreign Keys ({len(db_schema.edges)})[/bold]")
+                for fk in db_schema.edges:
                     nullable = "nullable" if fk.is_nullable else "required"
                     src_cols = ", ".join(fk.source_columns)
                     tgt_cols = ", ".join(fk.target_columns)
@@ -1301,7 +1341,7 @@ def inspect(
                         f"  {fk.source_table}.{src_cols} -> [cyan]{fk.target_table}[/cyan].{tgt_cols} ({nullable})"
                     )
 
-                self_refs = [fk for fk in schema.edges if fk.is_self_referential]
+                self_refs = [fk for fk in db_schema.edges if fk.is_self_referential]
                 if self_refs:
                     console.print("\n[yellow]Self-references (potential cycles):[/yellow]")
                     for fk in self_refs:

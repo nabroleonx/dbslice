@@ -21,9 +21,14 @@ class PostgreSQLAdapter(DatabaseAdapter):
     # and use a smaller batch size to account for composite keys and safety margin
     DEFAULT_BATCH_SIZE = 1000
 
-    def __init__(self, batch_size: int | None = None, profiler: Any = None):
+    def __init__(
+        self,
+        batch_size: int | None = None,
+        profiler: Any = None,
+        schema: str | None = None,
+    ):
         self._conn: Any = None
-        self._schema_name = "public"
+        self._schema_name = schema or "public"
         self._schema_cache: SchemaGraph | None = None
         self.batch_size = batch_size or self.DEFAULT_BATCH_SIZE
         self.profiler = profiler
@@ -54,7 +59,18 @@ class PostgreSQLAdapter(DatabaseAdapter):
             )
             # Use autocommit for reads by default
             self._conn.autocommit = True
-            logger.info("PostgreSQL connection established", database=config.database)
+
+            # Set search_path so unqualified table names resolve to the target schema
+            if self._schema_name != "public":
+                with self._conn.cursor() as cur:
+                    cur.execute("SET search_path TO %s, public", (self._schema_name,))
+                logger.debug("search_path set", schema=self._schema_name)
+
+            logger.info(
+                "PostgreSQL connection established",
+                database=config.database,
+                schema=self._schema_name,
+            )
         except psycopg2.Error as e:
             logger.error("PostgreSQL connection failed", error=str(e), exc_info=True)
             raise ConnectionError(url, str(e))

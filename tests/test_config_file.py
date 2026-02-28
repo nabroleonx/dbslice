@@ -25,10 +25,16 @@ class TestDatabaseConfig:
     def test_default_values(self):
         config = DatabaseConfig()
         assert config.url is None
+        assert config.schema is None
 
     def test_with_url(self):
         config = DatabaseConfig(url="postgres://localhost/test")
         assert config.url == "postgres://localhost/test"
+
+    def test_with_schema(self):
+        config = DatabaseConfig(url="postgres://localhost/test", schema="myschema")
+        assert config.url == "postgres://localhost/test"
+        assert config.schema == "myschema"
 
 
 class TestExtractionConfig:
@@ -145,6 +151,28 @@ output:
             assert config.extraction.direction == "both"
             assert config.anonymization.enabled is False
             assert config.output.format == "sql"
+        finally:
+            Path(temp_path).unlink()
+
+    def test_from_yaml_with_schema(self):
+        yaml_content = """
+database:
+  url: postgres://localhost/test
+  schema: myschema
+
+extraction:
+  default_depth: 3
+  direction: both
+"""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+            f.write(yaml_content)
+            f.flush()
+            temp_path = f.name
+
+        try:
+            config = DbsliceConfig.from_yaml(temp_path)
+            assert config.database.url == "postgres://localhost/test"
+            assert config.database.schema == "myschema"
         finally:
             Path(temp_path).unlink()
 
@@ -438,6 +466,30 @@ class TestToExtractConfig:
 
         assert extract_config.database_url == "postgres://localhost/test"
 
+    def test_schema_from_config(self):
+        config = DbsliceConfig(
+            database=DatabaseConfig(url="postgres://localhost/test", schema="myschema")
+        )
+        seeds = [SeedSpec.parse("users.id=1")]
+        extract_config = config.to_extract_config(seeds=seeds)
+        assert extract_config.schema == "myschema"
+
+    def test_schema_cli_overrides_config(self):
+        config = DbsliceConfig(
+            database=DatabaseConfig(url="postgres://localhost/test", schema="config_schema")
+        )
+        seeds = [SeedSpec.parse("users.id=1")]
+        extract_config = config.to_extract_config(seeds=seeds, schema="cli_schema")
+        assert extract_config.schema == "cli_schema"
+
+    def test_schema_none_when_not_set(self):
+        config = DbsliceConfig(
+            database=DatabaseConfig(url="postgres://localhost/test")
+        )
+        seeds = [SeedSpec.parse("users.id=1")]
+        extract_config = config.to_extract_config(seeds=seeds)
+        assert extract_config.schema is None
+
 
 class TestToYaml:
     """Tests for exporting config to YAML."""
@@ -472,6 +524,14 @@ class TestToYaml:
         assert data["output"]["format"] == "json"
         assert data["tables"]["sessions"]["skip"] is True
 
+    def test_yaml_with_schema(self):
+        config = DbsliceConfig(
+            database=DatabaseConfig(url="postgres://localhost/test", schema="myschema")
+        )
+        yaml_str = config.to_yaml(include_comments=False)
+        data = yaml.safe_load(yaml_str)
+        assert data["database"]["schema"] == "myschema"
+
     def test_yaml_with_comments(self):
         config = DbsliceConfig()
         yaml_str = config.to_yaml(include_comments=True)
@@ -480,6 +540,7 @@ class TestToYaml:
         assert "# dbslice configuration file" in yaml_str
         assert "# Database connection settings" in yaml_str
         assert "# Extraction behavior" in yaml_str
+        assert "# schema: public" in yaml_str
 
 
 class TestLoadConfig:

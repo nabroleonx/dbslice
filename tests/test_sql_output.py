@@ -64,6 +64,29 @@ class TestSQLGenerator:
         assert 'INSERT INTO "users"' in sql
         assert 'INSERT INTO "orders"' in sql
 
+    def test_generate_with_schema(self, sample_tables_schema):
+        generator = SQLGenerator(db_type=DatabaseType.POSTGRESQL, schema="myschema")
+        tables_data = {
+            "users": [{"id": 1, "email": "test@example.com", "name": "Test"}],
+        }
+        insert_order = ["users"]
+
+        sql = generator.generate(tables_data, insert_order, sample_tables_schema)
+
+        assert 'SET search_path TO "myschema", public;' in sql
+        assert 'INSERT INTO "users"' in sql
+
+    def test_generate_with_public_schema_no_search_path(self, sample_tables_schema):
+        generator = SQLGenerator(db_type=DatabaseType.POSTGRESQL, schema="public")
+        tables_data = {
+            "users": [{"id": 1, "email": "test@example.com", "name": "Test"}],
+        }
+        insert_order = ["users"]
+
+        sql = generator.generate(tables_data, insert_order, sample_tables_schema)
+
+        assert "SET search_path" not in sql
+
     def test_insert_order_respected(self, generator, sample_tables_schema):
         tables_data = {
             "users": [{"id": 1, "email": "a@b.com", "name": None}],
