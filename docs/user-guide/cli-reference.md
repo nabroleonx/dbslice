@@ -38,14 +38,14 @@ Extract a database subset starting from seed record(s).
 #### Synopsis
 
 ```bash
-dbslice extract [OPTIONS] DATABASE_URL
+dbslice extract [OPTIONS] [DATABASE_URL]
 ```
 
 #### Arguments
 
 | Argument | Description |
 |----------|-------------|
-| `DATABASE_URL` | Database connection URL (e.g., `postgresql://user:pass@host:5432/dbname`) |
+| `DATABASE_URL` | Optional database connection URL. If omitted, `DATABASE_URL` environment variable is used. |
 
 #### Options
 
@@ -342,14 +342,14 @@ Generate a configuration file from database schema.
 #### Synopsis
 
 ```bash
-dbslice init [OPTIONS] DATABASE_URL
+dbslice init [OPTIONS] [DATABASE_URL]
 ```
 
 #### Arguments
 
 | Argument | Description |
 |----------|-------------|
-| `DATABASE_URL` | Database connection URL |
+| `DATABASE_URL` | Optional database connection URL. If omitted, `DATABASE_URL` environment variable is used. |
 
 #### Options
 
@@ -423,14 +423,14 @@ Inspect database schema without extracting data.
 #### Synopsis
 
 ```bash
-dbslice inspect [OPTIONS] DATABASE_URL
+dbslice inspect [OPTIONS] [DATABASE_URL]
 ```
 
 #### Arguments
 
 | Argument | Description |
 |----------|-------------|
-| `DATABASE_URL` | Database connection URL |
+| `DATABASE_URL` | Optional database connection URL. If omitted, `DATABASE_URL` environment variable is used. |
 
 #### Options
 
@@ -536,6 +536,10 @@ dbslice inspect --help
 
 dbslice supports the following environment variables:
 
+Precedence for `extract` runtime settings:
+- `CLI > Env > Config`
+- For database URL specifically: CLI positional argument wins, then `DATABASE_URL`, then `database.url` from config.
+
 ### Database Connection
 
 | Variable | Description | Example |
@@ -555,12 +559,21 @@ dbslice supports the following environment variables:
 | `DBSLICE_DIRECTION` | Default traversal direction | `both` |
 | `DBSLICE_OUTPUT_FORMAT` | Default output format | `sql` |
 
+Accepted formats:
+- `DBSLICE_DEPTH`: positive integer.
+- `DBSLICE_DIRECTION`: `up`, `down`, or `both` (case-insensitive).
+- `DBSLICE_OUTPUT_FORMAT`: `sql`, `json`, or `csv` (case-insensitive).
+
 ### Security
 
 | Variable | Description | Example |
 |----------|-------------|---------|
 | `DBSLICE_ANONYMIZE` | Enable anonymization | `true` |
 | `DBSLICE_REDACT_FIELDS` | Comma-separated redact fields | `users.ssn,payments.card` |
+
+Accepted formats:
+- `DBSLICE_ANONYMIZE`: `1/0`, `true/false`, `yes/no`, or `on/off` (case-insensitive).
+- `DBSLICE_REDACT_FIELDS`: comma-separated `table.column` values.
 
 ### Examples
 

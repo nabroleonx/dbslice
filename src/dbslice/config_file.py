@@ -1,4 +1,6 @@
 import inspect
+import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -70,6 +72,7 @@ _VIRTUAL_FK_KEYS = {
     "name",
     "is_nullable",
 }
+_DATABASE_URL_ENV_PATTERN = re.compile(r"^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$")
 
 
 def _validate_unknown_keys(section_name: str, data: dict[str, Any], allowed: set[str]) -> None:
@@ -165,6 +168,37 @@ def _merge_database_url_options(url: str, options: dict[str, str]) -> str:
         existing[key] = [value]
     merged_query = urlencode(existing, doseq=True)
     return urlunparse(parsed._replace(query=merged_query))
+
+
+def _resolve_database_url(raw_url: Any) -> str | None:
+    """Resolve database.url, supporting exact-match ${VAR} and ${VAR_FILE} placeholders."""
+    if raw_url is None:
+        return None
+    if not isinstance(raw_url, str):
+        raise ValueError("'database.url' must be a string")
+
+    match = _DATABASE_URL_ENV_PATTERN.fullmatch(raw_url)
+    if not match:
+        return raw_url
+
+    env_key = match.group(1)
+    env_value = os.environ.get(env_key)
+    if env_value is None:
+        raise ValueError(
+            f"'database.url' references environment variable '{env_key}', but it is not set"
+        )
+
+    if env_key.endswith("_FILE"):
+        file_path = env_value
+        try:
+            resolved = Path(file_path).read_text(encoding="utf-8")
+        except OSError as e:
+            raise ValueError(
+                f"'database.url' references '{env_key}' -> '{file_path}', but file could not be read: {e}"
+            ) from e
+        return resolved.strip()
+
+    return env_value
 
 
 def _mask_url_password(url: str) -> str:
@@ -470,9 +504,10 @@ class DbsliceConfig:
         _validate_unknown_keys("database", database_data, _DATABASE_KEYS)
 
         database_options = _normalize_database_options(database_data.get("options"))
+        database_url = _resolve_database_url(database_data.get("url"))
 
         database = DatabaseConfig(
-            url=database_data.get("url"),
+            url=database_url,
             schema=database_data.get("schema"),
             options=database_options,
         )

@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 from typing import Annotated
 
@@ -98,6 +99,88 @@ def create_progress_callback(status: Status | None, verbose: bool, console: Cons
                 console.print(f"  [dim]{message}[/dim]")
 
     return callback
+
+
+def _parse_env_database_url(var_name: str) -> str | None:
+    """Parse a database URL from environment variable."""
+    raw = os.environ.get(var_name)
+    if raw is None:
+        return None
+
+    value = raw.strip()
+    if not value:
+        raise ValueError(f"Environment variable {var_name} is set but empty")
+    return value
+
+
+def _parse_env_int(var_name: str, *, minimum: int = 1) -> int | None:
+    """Parse an integer from environment variable."""
+    raw = os.environ.get(var_name)
+    if raw is None:
+        return None
+
+    value_raw = raw.strip()
+    if not value_raw:
+        raise ValueError(f"Environment variable {var_name} must be an integer")
+
+    try:
+        value = int(value_raw)
+    except ValueError as e:
+        raise ValueError(f"Environment variable {var_name} must be an integer") from e
+
+    if value < minimum:
+        raise ValueError(f"Environment variable {var_name} must be >= {minimum}")
+    return value
+
+
+def _parse_env_choice(var_name: str, allowed: set[str]) -> str | None:
+    """Parse a case-insensitive choice from environment variable."""
+    raw = os.environ.get(var_name)
+    if raw is None:
+        return None
+
+    value = raw.strip().lower()
+    if value not in allowed:
+        raise ValueError(
+            f"Environment variable {var_name} must be one of: {', '.join(sorted(allowed))}"
+        )
+    return value
+
+
+def _parse_env_bool(var_name: str) -> bool | None:
+    """Parse a boolean from environment variable."""
+    raw = os.environ.get(var_name)
+    if raw is None:
+        return None
+
+    value = raw.strip().lower()
+    if value in {"1", "true", "yes", "on"}:
+        return True
+    if value in {"0", "false", "no", "off"}:
+        return False
+
+    raise ValueError(
+        f"Environment variable {var_name} must be a boolean "
+        "(accepted: 1/0, true/false, yes/no, on/off)"
+    )
+
+
+def _parse_env_comma_list(var_name: str) -> list[str] | None:
+    """Parse a comma-separated list from environment variable."""
+    raw = os.environ.get(var_name)
+    if raw is None:
+        return None
+
+    value = raw.strip()
+    if not value:
+        return []
+
+    items = [item.strip() for item in value.split(",")]
+    if any(not item for item in items):
+        raise ValueError(
+            f"Environment variable {var_name} must be a comma-separated list without empty entries"
+        )
+    return items
 
 
 def _parse_and_validate_seeds(
@@ -922,11 +1005,42 @@ def extract(
     try:
         setup_logging(verbose=verbose, no_progress=no_progress, structured=False)
         logger.debug("CLI command invoked", command="extract", depth=depth, direction=direction)
-        database_url_from_cli = database_url is not None
+        try:
+            database_url_override = database_url
+            if database_url_override is None:
+                database_url_override = _parse_env_database_url("DATABASE_URL")
+            database_url_from_override = database_url_override is not None
 
-        effective_depth = depth if depth is not None else DEFAULT_TRAVERSAL_DEPTH
-        effective_direction = direction if direction is not None else "both"
-        effective_output = output if output is not None else "sql"
+            depth_override = depth
+            if depth_override is None:
+                depth_override = _parse_env_int("DBSLICE_DEPTH", minimum=1)
+
+            direction_override = direction
+            if direction_override is None:
+                direction_override = _parse_env_choice(
+                    "DBSLICE_DIRECTION", {"up", "down", "both"}
+                )
+
+            output_override = output
+            if output_override is None:
+                output_override = _parse_env_choice(
+                    "DBSLICE_OUTPUT_FORMAT", {"sql", "json", "csv"}
+                )
+
+            anonymize_override = anonymize
+            if anonymize_override is None:
+                anonymize_override = _parse_env_bool("DBSLICE_ANONYMIZE")
+
+            redact_override = redact
+            if redact_override is None:
+                redact_override = _parse_env_comma_list("DBSLICE_REDACT_FIELDS")
+        except ValueError as e:
+            console.print(f"[red]Validation Error:[/red] {e}")
+            raise typer.Exit(1)
+
+        effective_depth = depth_override if depth_override is not None else DEFAULT_TRAVERSAL_DEPTH
+        effective_direction = direction_override if direction_override is not None else "both"
+        effective_output = output_override if output_override is not None else "sql"
         effective_validate = validate if validate is not None else True
         effective_fail_on_validation_error = (
             fail_on_validation_error if fail_on_validation_error is not None else False
@@ -954,17 +1068,19 @@ def extract(
                 console.print(f"[red]Config Error:[/red] {e}")
                 raise typer.Exit(1)
 
-        if not database_url and (not loaded_config or not loaded_config.database.url):
+        if not database_url_override and (not loaded_config or not loaded_config.database.url):
             console.print(
                 "[red]Error:[/red] Database URL is required. "
-                "Provide it via DATABASE_URL argument or in config file under 'database.url'"
+                "Provide it via DATABASE_URL argument, DATABASE_URL environment variable, "
+                "or in config file under 'database.url'"
             )
             raise typer.Exit(1)
 
-        if not database_url and loaded_config:
-            database_url = loaded_config.database.url
+        resolved_database_url = database_url_override
+        if not resolved_database_url and loaded_config:
+            resolved_database_url = loaded_config.database.url
 
-        assert database_url is not None  # Guaranteed by the check above
+        assert resolved_database_url is not None  # Guaranteed by the check above
 
         effective_json_mode = json_mode if json_mode is not None else "auto"
         effective_json_pretty = json_pretty if json_pretty is not None else True
@@ -982,7 +1098,7 @@ def extract(
                 effective_csv_delimiter = loaded_config.output.csv_delimiter
 
         try:
-            validate_database_url(database_url)
+            validate_database_url(resolved_database_url)
             validate_depth(effective_depth)
             if out_file:
                 validate_output_file_path(out_file)
@@ -992,11 +1108,14 @@ def extract(
                 validate_exclude_tables(exclude)
             if passthrough:
                 validate_exclude_tables(passthrough)  # Same validation as exclude
-            if redact:
-                validate_redact_fields(redact)
-            if direction is not None and direction.lower() not in {"up", "down", "both"}:
+            if redact_override:
+                validate_redact_fields(redact_override)
+            if (
+                direction_override is not None
+                and direction_override.lower() not in {"up", "down", "both"}
+            ):
                 raise ValueError("Invalid direction. Use: up, down, both")
-            if output is not None and output.lower() not in {"sql", "json", "csv"}:
+            if output_override is not None and output_override.lower() not in {"sql", "json", "csv"}:
                 raise ValueError("Invalid output format. Use: sql, json, csv")
             if effective_json_mode not in ("auto", "single", "per-table"):
                 raise ValueError(
@@ -1023,23 +1142,27 @@ def extract(
 
         if loaded_config:
             direction_enum = (
-                TraversalDirection(effective_direction.lower()) if direction is not None else None
+                TraversalDirection(effective_direction.lower())
+                if direction_override is not None
+                else None
             )
             output_format_enum = (
-                OutputFormat(effective_output.lower()) if output is not None else None
+                OutputFormat(effective_output.lower())
+                if output_override is not None
+                else None
             )
 
             extract_config = loaded_config.to_extract_config(
                 seeds=seed_specs,
-                database_url=database_url if database_url_from_cli else None,
-                depth=depth,
+                database_url=database_url_override if database_url_from_override else None,
+                depth=depth_override,
                 direction=direction_enum,
                 output_format=output_format_enum,
                 output_file=str(out_file) if out_file else None,
                 exclude=exclude,
                 passthrough=passthrough,
-                anonymize=anonymize,
-                redact=redact,
+                anonymize=anonymize_override,
+                redact=redact_override,
                 verbose=verbose,
                 dry_run=dry_run,
                 no_progress=no_progress,
@@ -1060,7 +1183,7 @@ def extract(
                 effective_direction, effective_output, console
             )
             extract_config = _build_extract_config(
-                database_url=database_url,
+                database_url=resolved_database_url,
                 seeds=seed_specs,
                 depth=effective_depth,
                 direction=direction_enum,
@@ -1068,8 +1191,8 @@ def extract(
                 out_file=out_file,
                 exclude=exclude,
                 passthrough=passthrough,
-                anonymize=bool(anonymize) if anonymize is not None else False,
-                redact=redact,
+                anonymize=bool(anonymize_override) if anonymize_override is not None else False,
+                redact=redact_override,
                 verbose=verbose,
                 dry_run=dry_run,
                 no_progress=no_progress,
@@ -1157,11 +1280,11 @@ def extract(
 @app.command()
 def init(
     database_url: Annotated[
-        str,
+        str | None,
         typer.Argument(
             help="Database connection URL (e.g., postgres://user:pass@host:5432/dbname)"
         ),
-    ],
+    ] = None,
     out_file: Annotated[
         Path,
         typer.Option(
@@ -1203,10 +1326,21 @@ def init(
         dbslice init postgres://localhost/myapp --no-detect-sensitive
     """
     try:
+        resolved_database_url = database_url
+        if resolved_database_url is None:
+            resolved_database_url = _parse_env_database_url("DATABASE_URL")
+        if not resolved_database_url:
+            console.print(
+                "[red]Error:[/red] Database URL is required. "
+                "Provide DATABASE_URL argument or set DATABASE_URL environment variable"
+            )
+            raise typer.Exit(1)
+        database_url = resolved_database_url
+
         try:
             validate_database_url(database_url)
             validate_output_file_path(out_file)
-        except ValidationError as e:
+        except (ValidationError, ValueError) as e:
             console.print(f"[red]Validation Error:[/red] {e}")
             raise typer.Exit(1)
 
@@ -1282,6 +1416,10 @@ def init(
 
         finally:
             adapter.close()
+
+    except ValueError as e:
+        console.print(f"[red]Validation Error:[/red] {e}")
+        raise typer.Exit(1)
 
     except ConnectionError as e:
         console.print(f"[red]Connection failed:[/red] {e.reason}")
@@ -1363,9 +1501,9 @@ def _detect_sensitive_fields(schema) -> dict[str, str]:
 @app.command()
 def inspect(
     database_url: Annotated[
-        str,
+        str | None,
         typer.Argument(help="Database connection URL"),
-    ],
+    ] = None,
     table: Annotated[
         str | None,
         typer.Option(
@@ -1388,13 +1526,24 @@ def inspect(
     Shows tables, foreign keys, and detected sensitive fields.
     """
     try:
+        resolved_database_url = database_url
+        if resolved_database_url is None:
+            resolved_database_url = _parse_env_database_url("DATABASE_URL")
+        if not resolved_database_url:
+            console.print(
+                "[red]Error:[/red] Database URL is required. "
+                "Provide DATABASE_URL argument or set DATABASE_URL environment variable"
+            )
+            raise typer.Exit(1)
+        database_url = resolved_database_url
+
         try:
             validate_database_url(database_url)
             if table:
                 from dbslice.input_validators import validate_table_name
 
                 validate_table_name(table)
-        except ValidationError as e:
+        except (ValidationError, ValueError) as e:
             console.print(f"[red]Validation Error:[/red] {e}")
             raise typer.Exit(1)
 
@@ -1469,6 +1618,10 @@ def inspect(
 
         finally:
             adapter.close()
+
+    except ValueError as e:
+        console.print(f"[red]Validation Error:[/red] {e}")
+        raise typer.Exit(1)
 
     except ConnectionError as e:
         console.print(f"[red]Connection failed:[/red] {e.reason}")

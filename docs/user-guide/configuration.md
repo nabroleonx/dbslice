@@ -141,6 +141,13 @@ database:
   url: ${DATABASE_URL_FILE}
 ```
 
+`database.url` placeholder behavior:
+- Exact-match placeholders only: the full value must be `${VAR}` or `${VAR_FILE}`.
+- `${VAR}`: uses the value of environment variable `VAR`.
+- `${VAR_FILE}`: reads file path from environment variable `VAR_FILE`, then uses trimmed file contents.
+- Missing env var or unreadable `_FILE` target causes config-load validation failure.
+- Partial-string interpolation is not supported.
+
 `database.options` precedence:
 - Applied only when URL comes from config (`database.url`).
 - If CLI provides database URL, config `database.options` are ignored.

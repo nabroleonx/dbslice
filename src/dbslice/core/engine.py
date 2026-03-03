@@ -14,6 +14,7 @@ from dbslice.config import (
 from dbslice.constants import DEFAULT_ANONYMIZATION_SEED, DEFAULT_TRAVERSAL_DEPTH
 from dbslice.core.graph import GraphTraverser, TraversalConfig, TraversalResult
 from dbslice.exceptions import (
+    ExtractionError,
     NoRowsFoundError,
     TableNotFoundError,
 )
@@ -635,6 +636,11 @@ class ExtractionEngine:
         table_info = self.schema.get_table(seed.table)
         assert table_info is not None  # Guaranteed by has_table check above
         pk_columns = table_info.primary_key
+        if not pk_columns:
+            raise ExtractionError(
+                "Seed table has no primary key; choose a seed table with a primary key",
+                table=seed.table,
+            )
 
         where_clause, params = seed.to_where_clause()
         seed_rows = list(self.adapter.fetch_rows(seed.table, where_clause, params))

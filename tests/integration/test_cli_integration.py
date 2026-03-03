@@ -819,6 +819,101 @@ class TestCLIInspect:
         assert "user_id" in combined  # FK column
 
 
+class TestCLIEnvironmentFallback:
+    """Test DATABASE_URL fallback behavior for commands."""
+
+    def test_cli_extract_uses_database_url_env(self, ecommerce_schema: dict, test_db_url: str):
+        env = os.environ.copy()
+        env["DATABASE_URL"] = test_db_url
+
+        result = subprocess.run(
+            [
+                "python",
+                "-m",
+                "dbslice.cli",
+                "extract",
+                "--seed",
+                "orders.id=1",
+                "--no-progress",
+            ],
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+
+        assert result.returncode == 0
+        assert "INSERT INTO" in result.stdout
+
+    def test_cli_init_uses_database_url_env(self, ecommerce_schema: dict, test_db_url: str):
+        env = os.environ.copy()
+        env["DATABASE_URL"] = test_db_url
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as cfg:
+            cfg_path = cfg.name
+
+        try:
+            result = subprocess.run(
+                [
+                    "python",
+                    "-m",
+                    "dbslice.cli",
+                    "init",
+                    "--out-file",
+                    cfg_path,
+                ],
+                capture_output=True,
+                text=True,
+                env=env,
+            )
+
+            assert result.returncode == 0
+            assert os.path.exists(cfg_path)
+            with open(cfg_path, encoding="utf-8") as f:
+                assert "database:" in f.read()
+        finally:
+            if os.path.exists(cfg_path):
+                os.unlink(cfg_path)
+
+    def test_cli_inspect_uses_database_url_env(self, ecommerce_schema: dict, test_db_url: str):
+        env = os.environ.copy()
+        env["DATABASE_URL"] = test_db_url
+
+        result = subprocess.run(
+            [
+                "python",
+                "-m",
+                "dbslice.cli",
+                "inspect",
+            ],
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+
+        assert result.returncode == 0
+        combined = result.stdout + result.stderr
+        assert "users" in combined
+
+    def test_cli_inspect_without_url_or_env_fails(self):
+        env = os.environ.copy()
+        env.pop("DATABASE_URL", None)
+
+        result = subprocess.run(
+            [
+                "python",
+                "-m",
+                "dbslice.cli",
+                "inspect",
+            ],
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+
+        assert result.returncode != 0
+        combined = result.stdout + result.stderr
+        assert "Database URL is required" in combined
+
+
 class TestCLIVersion:
     """Test version flag."""
 
