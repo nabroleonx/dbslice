@@ -408,9 +408,8 @@ class TestOutputFileSecurity:
         """Output to system directories should be rejected."""
         from dbslice.input_validators import FilePathValidationError, validate_output_file_path
 
-        # /bin and /usr/bin are reliably blocked on all platforms
-        # /etc may resolve to /private/etc on macOS, bypassing the check (documented finding)
-        system_paths = ["/bin/output.sql", "/usr/bin/output.sql", "/sbin/output.sql"]
+        # Canonical system paths should be blocked.
+        system_paths = ["/bin/output.sql", "/usr/bin/output.sql", "/sbin/output.sql", "/etc/output.sql"]
         for path in system_paths:
             with pytest.raises(FilePathValidationError):
                 validate_output_file_path(path)
@@ -422,25 +421,18 @@ class TestOutputFileSecurity:
         with pytest.raises(FilePathValidationError):
             validate_output_file_path("")
 
-    def test_output_file_world_readable_default(self):
-        """Document that output files use default permissions (0644 = world-readable).
+    def test_output_file_not_world_readable_by_default(self):
+        """Output helper should create non-world-readable files by default."""
+        from dbslice.utils.fileio import write_text_file_secure
 
-        This is an informational finding: files created by Path.write_text()
-        and open(..., 'w') use the process umask, which typically results in
-        0644 permissions. For sensitive data exports, this could be a risk.
-        """
-        # This test documents the current behavior, not a fix
         with tempfile.NamedTemporaryFile(mode="w", suffix=".sql", delete=False) as f:
-            f.write("-- test output\n")
             tmpfile = f.name
 
         try:
-            mode = os.stat(tmpfile).st_mode
-            # Check if world-readable (others have read permission)
-            is_world_readable = bool(mode & stat.S_IROTH)
-            # This documents the current state -- files are world-readable by default
-            # A fix would use os.umask(0o077) or os.open with mode 0o600
-            assert isinstance(is_world_readable, bool)  # Just document, don't fail
+            write_text_file_secure(tmpfile, "-- test output\n", file_mode=0o600)
+            mode = stat.S_IMODE(os.stat(tmpfile).st_mode)
+            assert not bool(mode & stat.S_IROTH)
+            assert not bool(mode & stat.S_IWOTH)
         finally:
             os.unlink(tmpfile)
 

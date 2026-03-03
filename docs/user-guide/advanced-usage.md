@@ -67,7 +67,28 @@ dbslice extract \
   --out-file user_custom_redact.sql
 ```
 
-You can also define custom patterns and redact lists in your config file. See [Configuration](configuration.md) for the `anonymization` section.
+You can also define explicit redact field mappings in your config file (`anonymization.fields`).  
+You can also define wildcard anonymization rules in config via `anonymization.patterns`
+and wildcard NULL-forcing rules via `anonymization.security_null_fields`.
+
+Example:
+
+```yaml
+anonymization:
+  enabled: true
+  fields:
+    users.email: email                # exact field provider
+  patterns:
+    users.*_name: name                # wildcard field provider
+    "*.phone*": phone_number
+  security_null_fields:
+    - users.password*                 # force NULL
+    - "*.api_key"
+```
+
+Rule precedence is: exact `fields` > wildcard `patterns` > built-in pattern mapping.
+For wildcard conflicts, the most specific rule wins (ties use first-defined order).
+Foreign-key columns are never anonymized or nulled.
 
 ### Deterministic Anonymization
 

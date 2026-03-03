@@ -5,7 +5,9 @@ from pathlib import Path
 from typing import Any
 from uuid import UUID
 
+from dbslice.constants import DEFAULT_OUTPUT_FILE_MODE
 from dbslice.models import Table
+from dbslice.utils.fileio import write_text_file_secure
 
 
 class DatabaseTypeEncoder(json.JSONEncoder):
@@ -248,6 +250,7 @@ class JSONGenerator:
         self,
         output: str | dict[str, str],
         file_path: Path | str,
+        file_mode: int = DEFAULT_OUTPUT_FILE_MODE,
     ) -> None:
         """
         Write JSON output to file(s).
@@ -267,7 +270,7 @@ class JSONGenerator:
                 raise ValueError("Single mode output must be a string")
 
             file_path.parent.mkdir(parents=True, exist_ok=True)
-            file_path.write_text(output, encoding="utf-8")
+            write_text_file_secure(file_path, output, file_mode=file_mode, encoding="utf-8")
         else:
             if not isinstance(output, dict):
                 raise ValueError("Per-table mode output must be a dict")
@@ -276,7 +279,7 @@ class JSONGenerator:
 
             for table_name, json_str in output.items():
                 table_file = file_path / f"{table_name}.json"
-                table_file.write_text(json_str, encoding="utf-8")
+                write_text_file_secure(table_file, json_str, file_mode=file_mode, encoding="utf-8")
 
 
 def generate_json(

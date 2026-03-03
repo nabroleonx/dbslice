@@ -98,6 +98,12 @@ class PostgreSQLAdapter(DatabaseAdapter):
             edges = self._fetch_foreign_keys(schema)
             logger.debug("Foreign keys fetched", count=len(edges))
 
+            # Keep per-table FK lists in sync with graph edges.
+            for fk in edges:
+                table = tables.get(fk.source_table)
+                if table is not None:
+                    table.foreign_keys.append(fk)
+
             self._schema_cache = SchemaGraph(tables=tables, edges=edges)
             logger.info(
                 "Schema introspection complete",
@@ -336,15 +342,10 @@ class PostgreSQLAdapter(DatabaseAdapter):
         if not pk_values:
             return
 
-        params_per_row = len(pk_columns)
-        effective_batch_size = self.batch_size // max(params_per_row, 1)
-
         pk_values_list = list(pk_values)
 
         try:
-            for batch_start in range(0, len(pk_values_list), effective_batch_size):
-                batch_end = min(batch_start + effective_batch_size, len(pk_values_list))
-                batch_pks = pk_values_list[batch_start:batch_end]
+            for _, batch_pks in self._iter_pk_batches(pk_values_list, len(pk_columns)):
 
                 if len(pk_columns) == 1:
                     col = pk_columns[0]
@@ -411,15 +412,10 @@ class PostgreSQLAdapter(DatabaseAdapter):
         if not pk_values:
             return
 
-        params_per_row = len(pk_columns)
-        effective_batch_size = self.batch_size // max(params_per_row, 1)
-
         pk_values_list = list(pk_values)
 
         try:
-            for batch_start in range(0, len(pk_values_list), effective_batch_size):
-                batch_end = min(batch_start + effective_batch_size, len(pk_values_list))
-                batch_pks = pk_values_list[batch_start:batch_end]
+            for batch_start, batch_pks in self._iter_pk_batches(pk_values_list, len(pk_columns)):
 
                 if len(pk_columns) == 1:
                     col = pk_columns[0]
@@ -480,15 +476,12 @@ class PostgreSQLAdapter(DatabaseAdapter):
         pk_cols = source_table.primary_key
         fk_cols = fk.source_columns
 
-        params_per_row = len(pk_cols)
-        effective_batch_size = self.batch_size // max(params_per_row, 1)
-
         result: set[tuple[Any, ...]] = set()
         pk_values_list = list(source_pk_values)
 
-        for batch_start in range(0, len(pk_values_list), effective_batch_size):
-            batch_end = min(batch_start + effective_batch_size, len(pk_values_list))
-            batch_pks = pk_values_list[batch_start:batch_end]
+        effective_batch_size = self._effective_batch_size(len(pk_cols))
+
+        for _, batch_pks in self._iter_pk_batches(pk_values_list, len(pk_cols)):
 
             if len(pk_cols) == 1:
                 pk_col = pk_cols[0]
@@ -574,17 +567,13 @@ class PostgreSQLAdapter(DatabaseAdapter):
             )
             return set()
 
-        params_per_row = len(fk_cols)
-        effective_batch_size = self.batch_size // max(params_per_row, 1)
-
         result: set[tuple[Any, ...]] = set()
         pk_values_list = list(target_pk_values)
+        effective_batch_size = self._effective_batch_size(len(fk_cols))
 
         pk_select = ", ".join(f'"{c}"' for c in pk_cols)
 
-        for batch_start in range(0, len(pk_values_list), effective_batch_size):
-            batch_end = min(batch_start + effective_batch_size, len(pk_values_list))
-            batch_pks = pk_values_list[batch_start:batch_end]
+        for _, batch_pks in self._iter_pk_batches(pk_values_list, len(fk_cols)):
 
             if len(fk_cols) == 1:
                 fk_col = fk_cols[0]
@@ -690,6 +679,21 @@ class PostgreSQLAdapter(DatabaseAdapter):
             raise ExtractionError(
                 f"Failed to fetch all PKs from passthrough table '{table}': {e}", table=table
             ) from e
+
+    def _effective_batch_size(self, params_per_row: int) -> int:
+        """Calculate effective batch size accounting for params per row."""
+        return max(1, self.batch_size // max(params_per_row, 1))
+
+    def _iter_pk_batches(
+        self,
+        pk_values_list: list[tuple[Any, ...]],
+        params_per_row: int,
+    ) -> Iterator[tuple[int, list[tuple[Any, ...]]]]:
+        """Yield (start_index, batch_values) pairs for PK batching."""
+        effective_batch_size = self._effective_batch_size(params_per_row)
+        for batch_start in range(0, len(pk_values_list), effective_batch_size):
+            batch_end = min(batch_start + effective_batch_size, len(pk_values_list))
+            yield batch_start, pk_values_list[batch_start:batch_end]
 
     def get_table_pk_columns(self, table: str) -> tuple[str, ...]:
         """Get primary key column names for a table."""

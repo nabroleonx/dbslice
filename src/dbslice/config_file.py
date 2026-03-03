@@ -1,17 +1,170 @@
+import inspect
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse, urlunparse
+from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
 import yaml
 
 from dbslice.config import ExtractConfig, OutputFormat, SeedSpec, TraversalDirection
-from dbslice.constants import DEFAULT_TRAVERSAL_DEPTH
+from dbslice.constants import (
+    DEFAULT_OUTPUT_FILE_MODE,
+    DEFAULT_STREAMING_CHUNK_SIZE,
+    DEFAULT_STREAMING_THRESHOLD,
+    DEFAULT_TRAVERSAL_DEPTH,
+)
 from dbslice.exceptions import DbsliceError
 from dbslice.logging import get_logger
 from dbslice.models import VirtualForeignKey
 
 logger = get_logger(__name__)
+
+_TOP_LEVEL_KEYS = {
+    "version",
+    "database",
+    "extraction",
+    "anonymization",
+    "output",
+    "performance",
+    "tables",
+    "virtual_foreign_keys",
+}
+_DATABASE_KEYS = {"url", "schema", "options"}
+_EXTRACTION_KEYS = {
+    "default_depth",
+    "direction",
+    "exclude_tables",
+    "passthrough_tables",
+    "validate",
+    "fail_on_validation_error",
+    "max_rows_per_table",
+}
+_ANONYMIZATION_KEYS = {
+    "enabled",
+    "seed",
+    "fields",
+    "patterns",
+    "security_null_fields",
+}
+_OUTPUT_KEYS = {
+    "format",
+    "include_transaction",
+    "include_truncate",
+    "include_drop_tables",
+    "disable_fk_checks",
+    "file_mode",
+    "json_mode",
+    "json_pretty",
+    "csv_mode",
+    "csv_delimiter",
+}
+_PERFORMANCE_KEYS = {"profile", "streaming", "batch_size"}
+_STREAMING_KEYS = {"enabled", "threshold", "chunk_size"}
+_TABLE_OVERRIDE_KEYS = {"skip", "max_rows", "depth", "direction", "exclude", "anonymize_fields"}
+_VIRTUAL_FK_KEYS = {
+    "source_table",
+    "source_columns",
+    "target_table",
+    "target_columns",
+    "description",
+    "name",
+    "is_nullable",
+}
+
+
+def _validate_unknown_keys(section_name: str, data: dict[str, Any], allowed: set[str]) -> None:
+    unknown = sorted(set(data.keys()) - allowed)
+    if unknown:
+        raise ValueError(
+            f"Unknown key(s) in '{section_name}': {', '.join(unknown)}. "
+            "Remove unsupported fields or update your config."
+        )
+
+
+def _validate_exact_field_key(key: str, section_name: str) -> None:
+    """Validate exact table.column keys (no wildcards)."""
+    if not isinstance(key, str):
+        raise ValueError(f"{section_name} keys must be strings")
+    if "*" in key or "?" in key:
+        raise ValueError(
+            f"{section_name} key '{key}' must be an exact table.column without wildcards"
+        )
+    parts = key.split(".")
+    if len(parts) != 2 or not parts[0] or not parts[1]:
+        raise ValueError(f"{section_name} key '{key}' must be in table.column format")
+
+
+def _validate_glob_field_pattern(pattern: str, section_name: str) -> None:
+    """Validate wildcard table.column glob patterns."""
+    if not isinstance(pattern, str):
+        raise ValueError(f"{section_name} entries must be strings")
+    parts = pattern.split(".")
+    if len(parts) != 2 or not parts[0] or not parts[1]:
+        raise ValueError(
+            f"{section_name} pattern '{pattern}' must be in table.column format (glob allowed)"
+        )
+
+
+def _validate_faker_provider(provider: str) -> None:
+    """Validate that a Faker provider exists and is callable without required args."""
+    if not isinstance(provider, str) or not provider:
+        raise ValueError("Faker provider name must be a non-empty string")
+
+    try:
+        from faker import Faker
+    except ImportError as e:
+        raise ValueError("Faker is required to validate anonymization providers") from e
+
+    fake = Faker()
+    method = getattr(fake, provider, None)
+    if method is None or not callable(method):
+        raise ValueError(f"Unknown Faker provider '{provider}'")
+
+    try:
+        signature = inspect.signature(method)
+    except (TypeError, ValueError):
+        # If we cannot introspect, accept callable as valid.
+        return
+
+    for param in signature.parameters.values():
+        if param.kind in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD):
+            continue
+        if param.default is inspect.Parameter.empty:
+            raise ValueError(
+                f"Faker provider '{provider}' requires parameter '{param.name}' and "
+                "cannot be used without arguments"
+            )
+
+
+def _normalize_database_options(raw_options: Any) -> dict[str, str]:
+    """Validate and normalize database options to string values."""
+    if raw_options is None:
+        return {}
+    if not isinstance(raw_options, dict):
+        raise ValueError("'database.options' must be a mapping")
+
+    normalized: dict[str, str] = {}
+    for key, value in raw_options.items():
+        if not isinstance(key, str) or not key:
+            raise ValueError("'database.options' keys must be non-empty strings")
+        if value is None or not isinstance(value, (str, int, float, bool)):
+            raise ValueError(
+                "'database.options' values must be scalar (string, number, or boolean)"
+            )
+        normalized[key] = str(value).lower() if isinstance(value, bool) else str(value)
+    return normalized
+
+
+def _merge_database_url_options(url: str, options: dict[str, str]) -> str:
+    """Merge/override query options into a database URL."""
+    if not options:
+        return url
+    parsed = urlparse(url)
+    existing = parse_qs(parsed.query, keep_blank_values=True)
+    for key, value in options.items():
+        existing[key] = [value]
+    merged_query = urlencode(existing, doseq=True)
+    return urlunparse(parsed._replace(query=merged_query))
 
 
 def _mask_url_password(url: str) -> str:
@@ -30,12 +183,24 @@ def _mask_url_password(url: str) -> str:
     return url
 
 
+def _yaml_quote(value: str) -> str:
+    """Quote a YAML scalar deterministically for safe inline emission."""
+    return yaml.safe_dump(
+        value,
+        default_style='"',
+        default_flow_style=True,
+        allow_unicode=False,
+    ).strip()
+
+
 __all__ = [
     "DbsliceConfig",
     "DatabaseConfig",
     "ExtractionConfig",
     "AnonymizationConfig",
     "OutputConfig",
+    "PerformanceConfig",
+    "StreamingConfig",
     "TableOverride",
     "VirtualForeignKeyConfig",
     "ConfigFileError",
@@ -62,6 +227,9 @@ class DatabaseConfig:
     schema: str | None = None
     """PostgreSQL schema name (default: 'public')."""
 
+    options: dict[str, str] = field(default_factory=dict)
+    """Additional connection options merged into URL query parameters."""
+
 
 @dataclass
 class ExtractionConfig:
@@ -78,6 +246,12 @@ class ExtractionConfig:
 
     passthrough_tables: list[str] = field(default_factory=list)
     """Tables to include in full, regardless of FK relationships (e.g., lookup tables, config tables)."""
+
+    validate: bool = True
+    """Validate extraction for referential integrity."""
+
+    fail_on_validation_error: bool = False
+    """Fail extraction when validation errors are detected."""
 
     max_rows_per_table: int | None = None
     """Global limit on rows per table (None = unlimited)."""
@@ -100,6 +274,20 @@ class AnonymizationConfig:
     Example: {"users.email": "email", "users.phone": "phone_number"}
     """
 
+    patterns: dict[str, str] = field(default_factory=dict)
+    """
+    Wildcard anonymization mappings.
+    Format: {"table_glob.column_glob": "faker_provider"}
+    Example: {"users.*_email": "email", "*.phone*": "phone_number"}
+    """
+
+    security_null_fields: list[str] = field(default_factory=list)
+    """
+    Wildcard field list to force NULL for sensitive values.
+    Format: ["table_glob.column_glob"]
+    Example: ["users.password*", "*.api_key"]
+    """
+
 
 @dataclass
 class OutputConfig:
@@ -111,8 +299,44 @@ class OutputConfig:
     include_transaction: bool = True
     """Wrap SQL output in transaction block."""
 
-    include_drop_tables: bool = False
-    """Include DROP TABLE statements in SQL output."""
+    include_truncate: bool = False
+    """Include TRUNCATE TABLE statements before inserts."""
+
+    disable_fk_checks: bool = False
+    """Disable FK checks while importing generated SQL."""
+
+    file_mode: int = DEFAULT_OUTPUT_FILE_MODE
+    """Permissions mode for output files (octal)."""
+
+    json_mode: str = "auto"
+    """JSON output mode: auto, single, or per-table."""
+
+    json_pretty: bool = True
+    """Enable pretty-printed JSON output."""
+
+    csv_mode: str = "auto"
+    """CSV output mode: auto, single, or per-table."""
+
+    csv_delimiter: str = ","
+    """CSV delimiter character."""
+
+
+@dataclass
+class StreamingConfig:
+    """Streaming performance configuration."""
+
+    enabled: bool = False
+    threshold: int = DEFAULT_STREAMING_THRESHOLD
+    chunk_size: int = DEFAULT_STREAMING_CHUNK_SIZE
+
+
+@dataclass
+class PerformanceConfig:
+    """Performance-related configuration."""
+
+    profile: bool = False
+    streaming: StreamingConfig = field(default_factory=StreamingConfig)
+    batch_size: int | None = None
 
 
 @dataclass
@@ -122,8 +346,17 @@ class TableOverride:
     skip: bool = False
     """Skip this table entirely."""
 
+    depth: int | None = None
+    """Per-table max depth override for downward traversal."""
+
+    direction: str | None = None
+    """Per-table traversal direction override: up, down, or both."""
+
     max_rows: int | None = None
     """Limit rows extracted from this table."""
+
+    anonymize_fields: dict[str, str] = field(default_factory=dict)
+    """Deprecated per-table anonymization mappings (column -> provider)."""
 
 
 @dataclass
@@ -161,10 +394,14 @@ class DbsliceConfig:
     CLI arguments, with CLI arguments taking precedence.
     """
 
+    version: str | None = None
+    """Optional config schema version tag (currently informational)."""
+
     database: DatabaseConfig = field(default_factory=DatabaseConfig)
     extraction: ExtractionConfig = field(default_factory=ExtractionConfig)
     anonymization: AnonymizationConfig = field(default_factory=AnonymizationConfig)
     output: OutputConfig = field(default_factory=OutputConfig)
+    performance: PerformanceConfig = field(default_factory=PerformanceConfig)
     tables: dict[str, TableOverride] = field(default_factory=dict)
     """Per-table overrides keyed by table name."""
 
@@ -225,24 +462,33 @@ class DbsliceConfig:
         Returns:
             DbsliceConfig object
         """
+        _validate_unknown_keys("root", data, _TOP_LEVEL_KEYS)
+
         database_data = data.get("database", {})
         if not isinstance(database_data, dict):
             raise ValueError("'database' section must be a mapping")
+        _validate_unknown_keys("database", database_data, _DATABASE_KEYS)
+
+        database_options = _normalize_database_options(database_data.get("options"))
 
         database = DatabaseConfig(
             url=database_data.get("url"),
             schema=database_data.get("schema"),
+            options=database_options,
         )
 
         extraction_data = data.get("extraction", {})
         if not isinstance(extraction_data, dict):
             raise ValueError("'extraction' section must be a mapping")
+        _validate_unknown_keys("extraction", extraction_data, _EXTRACTION_KEYS)
 
         extraction = ExtractionConfig(
             default_depth=extraction_data.get("default_depth", DEFAULT_TRAVERSAL_DEPTH),
             direction=extraction_data.get("direction", "both"),
             exclude_tables=extraction_data.get("exclude_tables", []),
             passthrough_tables=extraction_data.get("passthrough_tables", []),
+            validate=extraction_data.get("validate", True),
+            fail_on_validation_error=extraction_data.get("fail_on_validation_error", False),
             max_rows_per_table=extraction_data.get("max_rows_per_table"),
         )
 
@@ -260,47 +506,211 @@ class DbsliceConfig:
 
         if not isinstance(extraction.passthrough_tables, list):
             raise ValueError("'extraction.passthrough_tables' must be a list")
+        if not isinstance(extraction.validate, bool):
+            raise ValueError("'extraction.validate' must be true or false")
+        if not isinstance(extraction.fail_on_validation_error, bool):
+            raise ValueError("'extraction.fail_on_validation_error' must be true or false")
+        if extraction.max_rows_per_table is not None and (
+            not isinstance(extraction.max_rows_per_table, int) or extraction.max_rows_per_table <= 0
+        ):
+            raise ValueError("'extraction.max_rows_per_table' must be a positive integer")
 
         anon_data = data.get("anonymization", {})
         if not isinstance(anon_data, dict):
             raise ValueError("'anonymization' section must be a mapping")
 
+        _validate_unknown_keys("anonymization", anon_data, _ANONYMIZATION_KEYS)
+
         fields = anon_data.get("fields", {})
         if not isinstance(fields, dict):
             raise ValueError("'anonymization.fields' must be a mapping")
+        for field_name, provider in fields.items():
+            _validate_exact_field_key(field_name, "'anonymization.fields'")
+            _validate_faker_provider(provider)
+
+        patterns = anon_data.get("patterns", {})
+        if not isinstance(patterns, dict):
+            raise ValueError("'anonymization.patterns' must be a mapping")
+        for pattern, provider in patterns.items():
+            _validate_glob_field_pattern(pattern, "'anonymization.patterns'")
+            _validate_faker_provider(provider)
+
+        security_null_fields = anon_data.get("security_null_fields", [])
+        if not isinstance(security_null_fields, list):
+            raise ValueError("'anonymization.security_null_fields' must be a list")
+        for pattern in security_null_fields:
+            _validate_glob_field_pattern(pattern, "'anonymization.security_null_fields'")
 
         anonymization = AnonymizationConfig(
             enabled=anon_data.get("enabled", False),
             seed=anon_data.get("seed"),
             fields=fields,
+            patterns=patterns,
+            security_null_fields=security_null_fields,
         )
 
         output_data = data.get("output", {})
         if not isinstance(output_data, dict):
             raise ValueError("'output' section must be a mapping")
 
+        _validate_unknown_keys("output", output_data, _OUTPUT_KEYS)
+
+        include_drop_tables_alias = output_data.get("include_drop_tables")
+        include_truncate = output_data.get("include_truncate")
+
+        if include_drop_tables_alias is not None:
+            logger.warning(
+                "'output.include_drop_tables' is deprecated and treated as "
+                "'output.include_truncate'. This alias will be removed in a future release."
+            )
+            if include_truncate is not None and bool(include_truncate) != bool(include_drop_tables_alias):
+                raise ValueError(
+                    "'output.include_drop_tables' and 'output.include_truncate' disagree. "
+                    "Use only 'output.include_truncate'."
+                )
+            include_truncate = include_drop_tables_alias
+
+        file_mode = output_data.get("file_mode", DEFAULT_OUTPUT_FILE_MODE)
+        from dbslice.utils.fileio import parse_file_mode
+
+        try:
+            parsed_mode = parse_file_mode(file_mode)
+        except ValueError as e:
+            raise ValueError(f"'output.file_mode' is invalid: {e}")
+
+        include_truncate_value = include_truncate if include_truncate is not None else False
+
         output = OutputConfig(
             format=output_data.get("format", "sql"),
             include_transaction=output_data.get("include_transaction", True),
-            include_drop_tables=output_data.get("include_drop_tables", False),
+            include_truncate=include_truncate_value,
+            disable_fk_checks=output_data.get("disable_fk_checks", False),
+            file_mode=parsed_mode,
+            json_mode=output_data.get("json_mode", "auto"),
+            json_pretty=output_data.get("json_pretty", True),
+            csv_mode=output_data.get("csv_mode", "auto"),
+            csv_delimiter=output_data.get("csv_delimiter", ","),
         )
 
         valid_formats = {"sql", "json", "csv"}
         if output.format not in valid_formats:
             raise ValueError(f"'output.format' must be one of: {', '.join(valid_formats)}")
+        if not isinstance(output.include_truncate, bool):
+            raise ValueError("'output.include_truncate' must be true or false")
+        if not isinstance(output.include_transaction, bool):
+            raise ValueError("'output.include_transaction' must be true or false")
+        if not isinstance(output.disable_fk_checks, bool):
+            raise ValueError("'output.disable_fk_checks' must be true or false")
+        if output.json_mode not in {"auto", "single", "per-table"}:
+            raise ValueError("'output.json_mode' must be one of: auto, single, per-table")
+        if not isinstance(output.json_pretty, bool):
+            raise ValueError("'output.json_pretty' must be true or false")
+        if output.csv_mode not in {"auto", "single", "per-table"}:
+            raise ValueError("'output.csv_mode' must be one of: auto, single, per-table")
+        if not isinstance(output.csv_delimiter, str) or len(output.csv_delimiter) != 1:
+            raise ValueError("'output.csv_delimiter' must be a single-character string")
+
+        performance_data = data.get("performance", {})
+        if not isinstance(performance_data, dict):
+            raise ValueError("'performance' section must be a mapping")
+        _validate_unknown_keys("performance", performance_data, _PERFORMANCE_KEYS)
+
+        streaming_data = performance_data.get("streaming", {})
+        if not isinstance(streaming_data, dict):
+            raise ValueError("'performance.streaming' section must be a mapping")
+        _validate_unknown_keys("performance.streaming", streaming_data, _STREAMING_KEYS)
+
+        performance = PerformanceConfig(
+            profile=performance_data.get("profile", False),
+            streaming=StreamingConfig(
+                enabled=streaming_data.get("enabled", False),
+                threshold=streaming_data.get("threshold", DEFAULT_STREAMING_THRESHOLD),
+                chunk_size=streaming_data.get("chunk_size", DEFAULT_STREAMING_CHUNK_SIZE),
+            ),
+            batch_size=performance_data.get("batch_size"),
+        )
+        if not isinstance(performance.profile, bool):
+            raise ValueError("'performance.profile' must be true or false")
+        if not isinstance(performance.streaming.enabled, bool):
+            raise ValueError("'performance.streaming.enabled' must be true or false")
+        if not isinstance(performance.streaming.threshold, int) or performance.streaming.threshold <= 0:
+            raise ValueError("'performance.streaming.threshold' must be a positive integer")
+        if not isinstance(performance.streaming.chunk_size, int) or performance.streaming.chunk_size <= 0:
+            raise ValueError("'performance.streaming.chunk_size' must be a positive integer")
+        if performance.batch_size is not None and (
+            not isinstance(performance.batch_size, int) or performance.batch_size <= 0
+        ):
+            raise ValueError("'performance.batch_size' must be a positive integer")
 
         tables_data = data.get("tables", {})
         if not isinstance(tables_data, dict):
             raise ValueError("'tables' section must be a mapping")
 
         tables = {}
+        valid_directions = {"up", "down", "both"}
         for table_name, table_config in tables_data.items():
             if not isinstance(table_config, dict):
                 raise ValueError(f"Configuration for table '{table_name}' must be a mapping")
+            _validate_unknown_keys(f"tables.{table_name}", table_config, _TABLE_OVERRIDE_KEYS)
+
+            skip_value = table_config.get("skip")
+            exclude_alias = table_config.get("exclude")
+            if skip_value is not None and not isinstance(skip_value, bool):
+                raise ValueError(f"'tables.{table_name}.skip' must be true or false")
+            if exclude_alias is not None and not isinstance(exclude_alias, bool):
+                raise ValueError(f"'tables.{table_name}.exclude' must be true or false")
+            if (
+                skip_value is not None
+                and exclude_alias is not None
+                and bool(skip_value) != bool(exclude_alias)
+            ):
+                raise ValueError(
+                    f"'tables.{table_name}.skip' and 'tables.{table_name}.exclude' disagree. "
+                    "Use only 'skip'."
+                )
+            if exclude_alias is not None:
+                logger.warning(
+                    f"'tables.{table_name}.exclude' is deprecated and treated as "
+                    f"'tables.{table_name}.skip'. This alias will be removed in a future release."
+                )
+            final_skip = bool(skip_value) if skip_value is not None else bool(exclude_alias)
+
+            table_depth = table_config.get("depth")
+            if table_depth is not None and (not isinstance(table_depth, int) or table_depth <= 0):
+                raise ValueError(f"'tables.{table_name}.depth' must be a positive integer")
+
+            table_direction = table_config.get("direction")
+            if table_direction is not None and table_direction not in valid_directions:
+                raise ValueError(
+                    f"'tables.{table_name}.direction' must be one of: "
+                    f"{', '.join(sorted(valid_directions))}"
+                )
+
+            max_rows = table_config.get("max_rows")
+            if max_rows is not None and (not isinstance(max_rows, int) or max_rows <= 0):
+                raise ValueError(f"'tables.{table_name}.max_rows' must be a positive integer")
+
+            anonymize_fields = table_config.get("anonymize_fields", {})
+            if not isinstance(anonymize_fields, dict):
+                raise ValueError(f"'tables.{table_name}.anonymize_fields' must be a mapping")
+            for column_name, provider in anonymize_fields.items():
+                if not isinstance(column_name, str) or not column_name:
+                    raise ValueError(
+                        f"'tables.{table_name}.anonymize_fields' keys must be non-empty strings"
+                    )
+                if "." in column_name or "*" in column_name or "?" in column_name:
+                    raise ValueError(
+                        f"'tables.{table_name}.anonymize_fields' key '{column_name}' must be "
+                        "a bare column name without wildcards"
+                    )
+                _validate_faker_provider(provider)
 
             tables[table_name] = TableOverride(
-                skip=table_config.get("skip", False),
-                max_rows=table_config.get("max_rows"),
+                skip=final_skip,
+                depth=table_depth,
+                direction=table_direction,
+                max_rows=max_rows,
+                anonymize_fields=anonymize_fields,
             )
 
         vfk_data = data.get("virtual_foreign_keys", [])
@@ -311,6 +721,11 @@ class DbsliceConfig:
         for i, vfk_config in enumerate(vfk_data):
             if not isinstance(vfk_config, dict):
                 raise ValueError(f"Virtual FK #{i + 1} must be a mapping")
+            _validate_unknown_keys(
+                f"virtual_foreign_keys[{i}]",
+                vfk_config,
+                _VIRTUAL_FK_KEYS,
+            )
 
             if "source_table" not in vfk_config:
                 raise ValueError(f"Virtual FK #{i + 1}: 'source_table' is required")
@@ -344,10 +759,12 @@ class DbsliceConfig:
             )
 
         return cls(
+            version=data.get("version"),
             database=database,
             extraction=extraction,
             anonymization=anonymization,
             output=output,
+            performance=performance,
             tables=tables,
             virtual_foreign_keys=virtual_fks,
         )
@@ -367,9 +784,13 @@ class DbsliceConfig:
         verbose: bool = False,
         dry_run: bool = False,
         no_progress: bool = False,
-        validate: bool = True,
-        fail_on_validation_error: bool = False,
-        profile: bool = False,
+        validate: bool | None = None,
+        fail_on_validation_error: bool | None = None,
+        profile: bool | None = None,
+        stream: bool | None = None,
+        stream_threshold: int | None = None,
+        stream_chunk_size: int | None = None,
+        output_file_mode: int | None = None,
         schema: str | None = None,
     ) -> ExtractConfig:
         """
@@ -394,6 +815,10 @@ class DbsliceConfig:
             validate: Enable validation (from CLI)
             fail_on_validation_error: Fail on validation errors (from CLI)
             profile: Enable profiling (from CLI)
+            stream: Force streaming mode (from CLI)
+            stream_threshold: Auto-stream threshold override (from CLI)
+            stream_chunk_size: Streaming chunk size override (from CLI)
+            output_file_mode: Output file permissions override (from CLI)
             schema: PostgreSQL schema name override (from CLI)
 
         Returns:
@@ -402,7 +827,18 @@ class DbsliceConfig:
         Raises:
             ValueError: If required fields are missing
         """
-        final_url = database_url or self.database.url
+        final_url: str | None
+        if database_url is not None:
+            final_url = database_url
+            if self.database.options:
+                logger.warning(
+                    "Ignoring 'database.options' because database URL was provided via CLI"
+                )
+        else:
+            final_url = self.database.url
+            if final_url and self.database.options:
+                final_url = _merge_database_url_options(final_url, self.database.options)
+
         if not final_url:
             raise ValueError(
                 "Database URL is required. Provide it via --database-url or in config file under 'database.url'"
@@ -437,13 +873,73 @@ class DbsliceConfig:
             final_passthrough = set(self.extraction.passthrough_tables)
 
         final_anonymize = anonymize if anonymize is not None else self.anonymization.enabled
+        final_validate = validate if validate is not None else self.extraction.validate
+        final_fail_on_validation_error = (
+            fail_on_validation_error
+            if fail_on_validation_error is not None
+            else self.extraction.fail_on_validation_error
+        )
+        final_profile = profile if profile is not None else self.performance.profile
+        final_stream = stream if stream is not None else self.performance.streaming.enabled
+        final_stream_threshold = (
+            stream_threshold
+            if stream_threshold is not None
+            else self.performance.streaming.threshold
+        )
+        final_stream_chunk_size = (
+            stream_chunk_size
+            if stream_chunk_size is not None
+            else self.performance.streaming.chunk_size
+        )
+        final_output_file_mode = (
+            output_file_mode if output_file_mode is not None else self.output.file_mode
+        )
 
-        # Redact fields: merge CLI with config file
+        table_depth_overrides: dict[str, int] = {}
+        table_direction_overrides: dict[str, TraversalDirection] = {}
+        row_limit_per_table: dict[str, int] = {}
+        legacy_table_field_providers: dict[str, str] = {}
+
+        for table_name, override in self.tables.items():
+            if override.depth is not None:
+                table_depth_overrides[table_name] = override.depth
+            if override.direction is not None:
+                table_direction_overrides[table_name] = TraversalDirection(override.direction)
+            if override.max_rows is not None:
+                row_limit_per_table[table_name] = override.max_rows
+
+            if override.anonymize_fields:
+                logger.warning(
+                    f"'tables.{table_name}.anonymize_fields' is deprecated. "
+                    "Use 'anonymization.fields' instead."
+                )
+                for column_name, provider in override.anonymize_fields.items():
+                    field_name = f"{table_name}.{column_name}"
+                    legacy_table_field_providers[field_name] = provider
+
+        effective_field_providers: dict[str, str] = {}
+        if final_anonymize:
+            effective_field_providers.update(legacy_table_field_providers)
+            for field_name, provider in self.anonymization.fields.items():
+                if field_name in effective_field_providers:
+                    logger.warning(
+                        f"Both legacy table anonymization and 'anonymization.fields' define "
+                        f"'{field_name}'. Using 'anonymization.fields'."
+                    )
+                effective_field_providers[field_name] = provider
+
+        effective_patterns = dict(self.anonymization.patterns) if final_anonymize else {}
+        effective_security_null_fields = (
+            list(self.anonymization.security_null_fields) if final_anonymize else []
+        )
+
+        # Redact fields: merge config and CLI (only when anonymization is enabled)
         final_redact: list[str] = []
-        if self.anonymization.fields:
-            final_redact.extend(self.anonymization.fields.keys())
+        if final_anonymize and effective_field_providers:
+            final_redact.extend(effective_field_providers.keys())
         if redact:
             final_redact.extend(redact)
+        final_redact = list(dict.fromkeys(final_redact))
 
         logger.debug(
             "Merged config with CLI args",
@@ -485,9 +981,25 @@ class DbsliceConfig:
             verbose=verbose,
             dry_run=dry_run,
             no_progress=no_progress,
-            validate=validate,
-            fail_on_validation_error=fail_on_validation_error,
-            profile=profile,
+            validate=final_validate,
+            fail_on_validation_error=final_fail_on_validation_error,
+            profile=final_profile,
+            stream=final_stream,
+            streaming_threshold=final_stream_threshold,
+            streaming_chunk_size=final_stream_chunk_size,
+            db_batch_size=self.performance.batch_size,
+            include_transaction=self.output.include_transaction,
+            include_truncate=self.output.include_truncate,
+            disable_fk_checks=self.output.disable_fk_checks,
+            output_file_mode=final_output_file_mode,
+            table_depth_overrides=table_depth_overrides,
+            table_direction_overrides=table_direction_overrides,
+            row_limit_global=self.extraction.max_rows_per_table,
+            row_limit_per_table=row_limit_per_table,
+            anonymization_seed=self.anonymization.seed,
+            anonymization_field_providers=effective_field_providers,
+            anonymization_patterns=effective_patterns,
+            security_null_fields=effective_security_null_fields,
             virtual_foreign_keys=virtual_fks,
             schema=final_schema,
         )
@@ -509,6 +1021,10 @@ class DbsliceConfig:
             output.append("# https://github.com/nabroleonx/dbslice")
             output.append("")
 
+        if self.version:
+            output.append(f'version: "{self.version}"')
+            output.append("")
+
         if include_comments:
             output.append("# Database connection settings")
         output.append("database:")
@@ -526,6 +1042,10 @@ class DbsliceConfig:
             output.append(f"  schema: {self.database.schema}")
         elif include_comments:
             output.append("  # schema: public  # PostgreSQL schema (default: public)")
+        if self.database.options:
+            output.append("  options:")
+            for key, value in self.database.options.items():
+                output.append(f"    {key}: {_yaml_quote(value)}")
         output.append("")
 
         if include_comments:
@@ -533,11 +1053,16 @@ class DbsliceConfig:
         output.append("extraction:")
         output.append(f"  default_depth: {self.extraction.default_depth}")
         output.append(f"  direction: {self.extraction.direction}  # up, down, or both")
+        output.append(f"  validate: {str(self.extraction.validate).lower()}")
+        output.append(
+            "  fail_on_validation_error: "
+            f"{str(self.extraction.fail_on_validation_error).lower()}"
+        )
         if self.extraction.exclude_tables:
             output.append("  exclude_tables:")
             for table in self.extraction.exclude_tables:
                 output.append(f"    - {table}")
-        if self.extraction.max_rows_per_table:
+        if self.extraction.max_rows_per_table is not None:
             output.append(f"  max_rows_per_table: {self.extraction.max_rows_per_table}")
         output.append("")
 
@@ -551,6 +1076,14 @@ class DbsliceConfig:
             output.append("  fields:")
             for field, provider in self.anonymization.fields.items():
                 output.append(f"    {field}: {provider}")
+        if self.anonymization.patterns:
+            output.append("  patterns:")
+            for pattern, provider in self.anonymization.patterns.items():
+                output.append(f"    {_yaml_quote(pattern)}: {_yaml_quote(provider)}")
+        if self.anonymization.security_null_fields:
+            output.append("  security_null_fields:")
+            for pattern in self.anonymization.security_null_fields:
+                output.append(f"    - {_yaml_quote(pattern)}")
         output.append("")
 
         if include_comments:
@@ -558,7 +1091,29 @@ class DbsliceConfig:
         output.append("output:")
         output.append(f"  format: {self.output.format}  # sql, json, or csv")
         output.append(f"  include_transaction: {str(self.output.include_transaction).lower()}")
-        output.append(f"  include_drop_tables: {str(self.output.include_drop_tables).lower()}")
+        output.append(f"  include_truncate: {str(self.output.include_truncate).lower()}")
+        output.append(f"  disable_fk_checks: {str(self.output.disable_fk_checks).lower()}")
+        output.append(f"  file_mode: \"{self.output.file_mode:o}\"")
+        output.append(f"  json_mode: {self.output.json_mode}")
+        output.append(f"  json_pretty: {str(self.output.json_pretty).lower()}")
+        output.append(f"  csv_mode: {self.output.csv_mode}")
+        output.append(f"  csv_delimiter: \"{self.output.csv_delimiter}\"")
+        if include_comments:
+            output.append(
+                "  # Backward-compatible alias accepted: include_drop_tables (deprecated)"
+            )
+        output.append("")
+
+        if include_comments:
+            output.append("# Performance settings")
+        output.append("performance:")
+        output.append(f"  profile: {str(self.performance.profile).lower()}")
+        output.append("  streaming:")
+        output.append(f"    enabled: {str(self.performance.streaming.enabled).lower()}")
+        output.append(f"    threshold: {self.performance.streaming.threshold}")
+        output.append(f"    chunk_size: {self.performance.streaming.chunk_size}")
+        if self.performance.batch_size is not None:
+            output.append(f"  batch_size: {self.performance.batch_size}")
         output.append("")
 
         if self.tables:
@@ -569,8 +1124,20 @@ class DbsliceConfig:
                 output.append(f"  {table_name}:")
                 if override.skip:
                     output.append("    skip: true")
+                if override.depth is not None:
+                    output.append(f"    depth: {override.depth}")
+                if override.direction is not None:
+                    output.append(f"    direction: {override.direction}")
                 if override.max_rows is not None:
                     output.append(f"    max_rows: {override.max_rows}")
+                if override.anonymize_fields:
+                    output.append("    anonymize_fields:")
+                    for column_name, provider in override.anonymize_fields.items():
+                        output.append(f"      {column_name}: {provider}")
+                    if include_comments:
+                        output.append(
+                            "    # Deprecated: prefer top-level anonymization.fields"
+                        )
             output.append("")
 
         if self.virtual_foreign_keys:

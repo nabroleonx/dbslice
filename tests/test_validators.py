@@ -14,6 +14,7 @@ from dbslice.input_validators import (
     validate_depth,
     validate_exclude_tables,
     validate_identifier,
+    validate_output_file_mode,
     validate_output_file_path,
     validate_redact_fields,
     validate_seed_value,
@@ -314,6 +315,36 @@ class TestFilePathValidation:
         if os.path.exists("/bin"):
             with pytest.raises(FilePathValidationError, match="system directory"):
                 validate_output_file_path("/bin/output.sql")
+        if os.path.exists("/etc"):
+            with pytest.raises(FilePathValidationError, match="system directory"):
+                validate_output_file_path("/etc/output.sql")
+
+    def test_symlink_to_system_directory_rejected(self, tmp_path):
+        import os
+
+        if not os.path.exists("/etc"):
+            pytest.skip("/etc not available on this platform")
+
+        symlink_dir = tmp_path / "etc_link"
+        os.symlink("/etc", symlink_dir)
+
+        with pytest.raises(FilePathValidationError, match="system directory"):
+            validate_output_file_path(symlink_dir / "output.sql")
+
+
+class TestOutputFileModeValidation:
+    """Tests for output file mode validation."""
+
+    def test_valid_modes(self):
+        assert validate_output_file_mode("600") == 0o600
+        assert validate_output_file_mode("0o640") == 0o640
+        assert validate_output_file_mode(0o660) == 0o660
+
+    def test_invalid_mode(self):
+        with pytest.raises(ValidationError):
+            validate_output_file_mode("999")
+        with pytest.raises(ValidationError):
+            validate_output_file_mode("abc")
 
 
 class TestExcludeTablesValidation:

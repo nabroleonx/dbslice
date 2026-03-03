@@ -11,14 +11,14 @@ from dbslice.config import (
     SeedSpec,
     TraversalDirection,
 )
-from dbslice.constants import DEFAULT_TRAVERSAL_DEPTH
+from dbslice.constants import DEFAULT_ANONYMIZATION_SEED, DEFAULT_TRAVERSAL_DEPTH
 from dbslice.core.graph import GraphTraverser, TraversalConfig, TraversalResult
 from dbslice.exceptions import (
     NoRowsFoundError,
     TableNotFoundError,
 )
 from dbslice.logging import get_logger
-from dbslice.models import SchemaGraph
+from dbslice.models import ForeignKey, SchemaGraph
 from dbslice.output.sql import SQLGenerator
 from dbslice.utils.anonymizer import DeterministicAnonymizer
 from dbslice.utils.connection import get_adapter_for_url, parse_database_url
@@ -118,9 +118,15 @@ class ExtractionEngine:
         # Initialize anonymizer if needed (schema will be set after introspection)
         self.anonymizer: DeterministicAnonymizer | None = None
         if config.anonymize or config.redact_fields:
-            self.anonymizer = DeterministicAnonymizer()
-            if config.redact_fields:
-                self.anonymizer.configure(config.redact_fields)
+            self.anonymizer = DeterministicAnonymizer(
+                seed=config.anonymization_seed or DEFAULT_ANONYMIZATION_SEED
+            )
+            self.anonymizer.configure(
+                config.redact_fields,
+                field_providers=config.anonymization_field_providers,
+                patterns=config.anonymization_patterns,
+                security_null_fields=config.security_null_fields,
+            )
 
     def _log(self, stage: str, message: str, current: int = 0, total: int = 0) -> None:
         """Send progress update to callback if configured."""
@@ -159,6 +165,7 @@ class ExtractionEngine:
 
         if db_config.db_type.value == "postgresql":
             self.adapter = PostgreSQLAdapter(
+                batch_size=self.config.db_batch_size,
                 profiler=profiler,
                 schema=self.config.schema,
             )
@@ -382,6 +389,19 @@ class ExtractionEngine:
             stats[table] = len(rows)
             logger.debug("Table data fetched", table=table, row_count=len(rows))
 
+        if self._has_row_limits():
+            self._log("limits", "Applying deterministic row limits with integrity closure...")
+            with logger.timed_operation("apply_row_limits"):
+                tables_data = self._apply_row_limits(tables_data)
+            stats = {table: len(rows) for table, rows in tables_data.items()}
+            logger.info(
+                "Row limits applied",
+                global_limit=self.config.row_limit_global,
+                per_table_limits=len(self.config.row_limit_per_table),
+                total_rows=sum(stats.values()),
+            )
+            self._log("limits", "Row limits applied")
+
         deferred_updates = []
         if broken_fks:
             from dbslice.core.cycles import build_deferred_updates
@@ -470,6 +490,140 @@ class ExtractionEngine:
 
         return [self.anonymizer.anonymize_row(table, row) for row in rows]
 
+    def _has_row_limits(self) -> bool:
+        """Check whether any row-limit configuration is active."""
+        return self.config.row_limit_global is not None or bool(self.config.row_limit_per_table)
+
+    def _row_limit_for_table(self, table: str) -> int | None:
+        """Resolve effective row limit for a table."""
+        if table in self.config.row_limit_per_table:
+            return self.config.row_limit_per_table[table]
+        return self.config.row_limit_global
+
+    def _row_sort_key(self, table: str, row: dict[str, Any]) -> tuple[Any, ...]:
+        """Build a deterministic sort key for row selection."""
+        assert self.schema is not None
+        table_info = self.schema.get_table(table)
+        if table_info and table_info.primary_key:
+            return tuple((row.get(col) is None, repr(row.get(col))) for col in table_info.primary_key)
+        # Fallback for tables without primary key
+        return tuple((k, repr(v)) for k, v in sorted(row.items()))
+
+    def _row_identity(
+        self, table: str, row: dict[str, Any], index: int
+    ) -> tuple[Any, ...]:
+        """Build a stable identity key for selected/candidate rows."""
+        assert self.schema is not None
+        table_info = self.schema.get_table(table)
+        if table_info and table_info.primary_key:
+            return ("pk",) + tuple(row.get(col) for col in table_info.primary_key)
+        return ("idx", index)
+
+    def _apply_row_limits(
+        self, tables_data: dict[str, list[dict[str, Any]]]
+    ) -> dict[str, list[dict[str, Any]]]:
+        """
+        Apply deterministic row limits and expand parent closure to preserve FK integrity.
+
+        Limits are treated as soft caps: required parent rows are added even if
+        that exceeds the configured cap.
+        """
+        assert self.schema is not None
+        if not tables_data or not self._has_row_limits():
+            return tables_data
+
+        candidate_rows_by_id: dict[str, dict[tuple[Any, ...], dict[str, Any]]] = {}
+        selected_ids: dict[str, dict[tuple[Any, ...], None]] = {}
+        sorted_rows: dict[str, list[dict[str, Any]]] = {}
+        effective_limits: dict[str, int] = {}
+
+        for table, rows in tables_data.items():
+            ordered_rows = sorted(rows, key=lambda row: self._row_sort_key(table, row))
+            sorted_rows[table] = ordered_rows
+
+            table_candidates: dict[tuple[Any, ...], dict[str, Any]] = {}
+            table_selected: dict[tuple[Any, ...], None] = {}
+            limit = self._row_limit_for_table(table)
+            if limit is not None:
+                effective_limits[table] = limit
+
+            for idx, row in enumerate(ordered_rows):
+                row_id = self._row_identity(table, row, idx)
+                table_candidates[row_id] = row
+
+            selected_count = len(ordered_rows) if limit is None else min(limit, len(ordered_rows))
+            for idx in range(selected_count):
+                row_id = self._row_identity(table, ordered_rows[idx], idx)
+                table_selected[row_id] = None
+
+            candidate_rows_by_id[table] = table_candidates
+            selected_ids[table] = table_selected
+
+        lookup_cache: dict[tuple[str, tuple[str, ...]], dict[tuple[Any, ...], list[tuple[Any, ...]]]] = {}
+
+        def _lookup_for(table: str, columns: tuple[str, ...]) -> dict[tuple[Any, ...], list[tuple[Any, ...]]]:
+            cache_key = (table, columns)
+            if cache_key in lookup_cache:
+                return lookup_cache[cache_key]
+
+            lookup: dict[tuple[Any, ...], list[tuple[Any, ...]]] = {}
+            for row_id, row in candidate_rows_by_id.get(table, {}).items():
+                key = tuple(row.get(col) for col in columns)
+                if None in key:
+                    continue
+                lookup.setdefault(key, []).append(row_id)
+            lookup_cache[cache_key] = lookup
+            return lookup
+
+        changed = True
+        while changed:
+            changed = False
+            for source_table in sorted(selected_ids.keys()):
+                if source_table not in self.schema.tables:
+                    continue
+                source_selected_ids = list(selected_ids[source_table].keys())
+                if not source_selected_ids:
+                    continue
+
+                parent_edges = sorted(
+                    self.schema.get_parents(source_table),
+                    key=lambda item: (item[0], item[1].name),
+                )
+                for parent_table, fk in parent_edges:
+                    if parent_table not in candidate_rows_by_id:
+                        continue
+                    assert isinstance(fk, ForeignKey)
+                    parent_lookup = _lookup_for(parent_table, fk.target_columns)
+                    parent_selected = selected_ids.setdefault(parent_table, {})
+
+                    for source_id in source_selected_ids:
+                        source_row = candidate_rows_by_id[source_table][source_id]
+                        source_key = tuple(source_row.get(col) for col in fk.source_columns)
+                        if None in source_key:
+                            continue
+                        parent_row_ids = parent_lookup.get(source_key, [])
+                        for parent_row_id in parent_row_ids:
+                            if parent_row_id not in parent_selected:
+                                parent_selected[parent_row_id] = None
+                                changed = True
+
+        limited_tables: dict[str, list[dict[str, Any]]] = {}
+        for table in tables_data.keys():
+            table_selected = selected_ids.get(table, {})
+            limited_rows = [candidate_rows_by_id[table][row_id] for row_id in table_selected.keys()]
+            limited_tables[table] = limited_rows
+
+            limit = effective_limits.get(table)
+            if limit is not None and len(limited_rows) > limit:
+                logger.info(
+                    "Row limit soft cap exceeded to preserve FK integrity",
+                    table=table,
+                    configured_limit=limit,
+                    final_rows=len(limited_rows),
+                )
+
+        return limited_tables
+
     def _process_seed(self, seed: SeedSpec) -> TraversalResult:
         """Process a single seed and return traversal result."""
         assert self.schema is not None
@@ -503,6 +657,8 @@ class ExtractionEngine:
             direction=self.config.direction,
             exclude_tables=self.config.exclude_tables,
             passthrough_tables=self.config.passthrough_tables,
+            table_depth_overrides=self.config.table_depth_overrides,
+            table_direction_overrides=self.config.table_direction_overrides,
         )
 
         traverser = GraphTraverser(self.schema, self.adapter)
@@ -520,11 +676,21 @@ class ExtractionEngine:
         """
         # Force streaming if explicitly enabled
         if self.config.stream:
+            if self._has_row_limits():
+                logger.warning(
+                    "Streaming disabled because row limits are configured and require in-memory integrity closure"
+                )
+                return False
             logger.debug("Streaming enabled via --stream flag")
             return True
 
         # Auto-enable streaming if above threshold and output file is specified
         if total_rows >= self.config.streaming_threshold and self.config.output_file:
+            if self._has_row_limits():
+                logger.warning(
+                    "Streaming disabled because row limits are configured and require in-memory integrity closure"
+                )
+                return False
             logger.debug(
                 "Auto-enabling streaming mode",
                 total_rows=total_rows,

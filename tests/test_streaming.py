@@ -1,5 +1,7 @@
 """Tests for streaming extraction functionality."""
 
+import os
+import stat
 from typing import Any
 
 from dbslice.config import (
@@ -168,6 +170,38 @@ def test_streaming_engine_basic(sample_schema, tmp_path):
     assert len(adapter.chunked_fetch_calls) == 2  # users + orders
 
 
+def test_streaming_output_file_mode_applied(sample_schema, tmp_path):
+    """Streaming output file should honor configured file mode."""
+    data = {
+        "users": [{"id": 1, "email": "alice@example.com", "name": "Alice"}],
+    }
+    adapter = ChunkedMockAdapter(sample_schema, data)
+    adapter.connect("test://localhost/test")
+
+    config = ExtractConfig(
+        database_url="test://localhost/test",
+        seeds=[SeedSpec.parse("users.id=1")],
+        output_file_mode=0o600,
+    )
+    output_file = tmp_path / "secure_stream.sql"
+
+    engine = StreamingExtractionEngine(
+        config=config,
+        adapter=adapter,
+        schema=sample_schema,
+        records={"users": {(1,)}},
+        insert_order=["users"],
+        broken_fks=[],
+        deferred_updates=[],
+        db_type=DatabaseType.POSTGRESQL,
+        chunk_size=1,
+    )
+    engine.stream_to_file(str(output_file))
+
+    mode = stat.S_IMODE(os.stat(output_file).st_mode)
+    assert not bool(mode & stat.S_IROTH)
+
+
 def test_streaming_with_anonymization(sample_schema, tmp_path):
     """Test streaming with anonymization enabled."""
     data = {
@@ -253,6 +287,48 @@ def test_streaming_mode_forced(sample_schema):
     engine = ExtractionEngine(config)
     # Should use streaming even for small datasets
     assert engine._should_use_streaming(100)
+
+
+def test_streaming_disabled_when_row_limits_configured():
+    """Row limiting requires in-memory closure, so streaming must be disabled."""
+    config = ExtractConfig(
+        database_url="test://localhost/test",
+        seeds=[SeedSpec.parse("users.id=1")],
+        stream=True,
+        output_file="/tmp/test.sql",
+        row_limit_global=10,
+    )
+
+    engine = ExtractionEngine(config)
+    assert not engine._should_use_streaming(100000)
+
+
+def test_row_limit_soft_cap_adds_required_parents(sample_schema):
+    """Configured caps are soft: parent rows are added to preserve FK integrity."""
+    config = ExtractConfig(
+        database_url="test://localhost/test",
+        seeds=[SeedSpec.parse("orders.id=1")],
+        row_limit_per_table={"users": 1},
+    )
+    engine = ExtractionEngine(config)
+    engine.schema = sample_schema
+
+    tables_data = {
+        "users": [
+            {"id": 1, "email": "alice@example.com", "name": "Alice"},
+            {"id": 2, "email": "bob@example.com", "name": "Bob"},
+        ],
+        "orders": [
+            {"id": 1, "user_id": 1, "total": 10.0, "status": "ok"},
+            {"id": 2, "user_id": 2, "total": 20.0, "status": "ok"},
+        ],
+    }
+
+    limited = engine._apply_row_limits(tables_data)
+
+    # Initial limit would pick one user, but closure should pull in both referenced users.
+    assert len(limited["users"]) == 2
+    assert {row["id"] for row in limited["users"]} == {1, 2}
 
 
 def test_streaming_vs_inmemory_same_output(sample_schema, tmp_path):

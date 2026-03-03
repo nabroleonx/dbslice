@@ -3,11 +3,13 @@ from typing import Any, TextIO
 
 from dbslice.adapters.base import DatabaseAdapter
 from dbslice.config import DatabaseType, ExtractConfig
+from dbslice.constants import DEFAULT_ANONYMIZATION_SEED
 from dbslice.core.engine import ExtractionResult, ProgressCallback
 from dbslice.logging import get_logger
 from dbslice.models import SchemaGraph, Table
 from dbslice.output.sql import SQLGenerator
 from dbslice.utils.anonymizer import DeterministicAnonymizer
+from dbslice.utils.fileio import open_text_file_secure
 
 logger = get_logger(__name__)
 
@@ -70,16 +72,22 @@ class StreamingExtractionEngine:
         # Initialize anonymizer if needed
         self.anonymizer: DeterministicAnonymizer | None = None
         if config.anonymize or config.redact_fields:
-            self.anonymizer = DeterministicAnonymizer()
+            self.anonymizer = DeterministicAnonymizer(
+                seed=config.anonymization_seed or DEFAULT_ANONYMIZATION_SEED
+            )
             self.anonymizer.schema = schema
-            if config.redact_fields:
-                self.anonymizer.configure(config.redact_fields)
+            self.anonymizer.configure(
+                config.redact_fields,
+                field_providers=config.anonymization_field_providers,
+                patterns=config.anonymization_patterns,
+                security_null_fields=config.security_null_fields,
+            )
 
         self.sql_generator = SQLGenerator(
             db_type=db_type,
-            include_transaction=True,
-            include_truncate=False,
-            disable_fk_checks=False,
+            include_transaction=config.include_transaction,
+            include_truncate=config.include_truncate,
+            disable_fk_checks=config.disable_fk_checks,
             schema=config.schema,
         )
 
@@ -119,7 +127,7 @@ class StreamingExtractionEngine:
         broken_fk_cols = self._build_broken_fk_map()
 
         try:
-            with open(output_file, "w") as f:
+            with open_text_file_secure(output_file, file_mode=self.config.output_file_mode) as f:
                 # Write header
                 self._write_header(f, total_tables)
 
@@ -253,12 +261,31 @@ class StreamingExtractionEngine:
         if self.broken_fks:
             f.write(f"-- Circular references detected: {len(self.broken_fks)} FK(s) broken\n")
         f.write("\n")
-        f.write("BEGIN;\n")
-        f.write("\n")
+
+        if self.config.disable_fk_checks:
+            f.write(self.sql_generator._disable_fk_checks() + "\n")
+            f.write("\n")
+
+        if self.config.include_transaction:
+            f.write("BEGIN;\n")
+            f.write("\n")
+
+        if self.config.include_truncate:
+            for table in self.insert_order:
+                if table in self.records:
+                    f.write(
+                        "TRUNCATE TABLE "
+                        f"{self.sql_generator._quote_identifier(table)} CASCADE;\n"
+                    )
+            f.write("\n")
 
     def _write_footer(self, f: TextIO) -> None:
         """Write SQL file footer."""
-        f.write("COMMIT;\n")
+        if self.config.include_transaction:
+            f.write("COMMIT;\n")
+        if self.config.disable_fk_checks:
+            f.write("\n")
+            f.write(self.sql_generator._enable_fk_checks() + "\n")
 
     def _write_deferred_updates(self, f: TextIO) -> None:
         """Write deferred UPDATE statements for broken FKs."""

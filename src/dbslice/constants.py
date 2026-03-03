@@ -21,3 +21,12 @@ MAX_AVAILABLE_COLUMNS_DISPLAY = 10
 
 DEFAULT_ANONYMIZATION_SEED = "dbslice_default_seed"
 """Default seed value for deterministic anonymization."""
+
+DEFAULT_STREAMING_THRESHOLD = 50000
+"""Auto-enable streaming mode above this row count."""
+
+DEFAULT_STREAMING_CHUNK_SIZE = 1000
+"""Default number of rows per chunk in streaming mode."""
+
+DEFAULT_OUTPUT_FILE_MODE = 0o600
+"""Secure default permissions for newly created output files."""

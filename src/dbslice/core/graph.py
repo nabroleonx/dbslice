@@ -19,6 +19,8 @@ class TraversalConfig:
     direction: TraversalDirection = TraversalDirection.BOTH
     exclude_tables: set[str] = field(default_factory=set)
     passthrough_tables: set[str] = field(default_factory=set)
+    table_depth_overrides: dict[str, int] = field(default_factory=dict)
+    table_direction_overrides: dict[str, TraversalDirection] = field(default_factory=dict)
 
 
 @dataclass
@@ -73,6 +75,17 @@ class GraphTraverser:
         self.schema = schema
         self.adapter = adapter
 
+    @staticmethod
+    def _direction_allows(direction: str, effective: TraversalDirection) -> bool:
+        """Check whether a queued traversal direction is allowed for a table."""
+        if direction == "up":
+            # Always allow upward traversals because DOWN mode schedules
+            # upward closure from children to preserve referential integrity.
+            return True
+        if direction == "down":
+            return effective in (TraversalDirection.DOWN, TraversalDirection.BOTH)
+        return False
+
     def traverse(
         self,
         seed_table: str,
@@ -111,10 +124,12 @@ class GraphTraverser:
         # Queue: (table, pk_set, depth, direction)
         queue: deque[tuple[str, set[tuple[Any, ...]], int, str]] = deque()
 
-        if config.direction in (TraversalDirection.UP, TraversalDirection.BOTH):
+        seed_direction = config.table_direction_overrides.get(seed_table, config.direction)
+
+        if seed_direction in (TraversalDirection.UP, TraversalDirection.BOTH):
             queue.append((seed_table, seed_pks, 0, "up"))
 
-        if config.direction in (TraversalDirection.DOWN, TraversalDirection.BOTH):
+        if seed_direction in (TraversalDirection.DOWN, TraversalDirection.BOTH):
             queue.append((seed_table, seed_pks, 0, "down"))
 
         # Track visited in each direction to avoid re-processing
@@ -124,12 +139,23 @@ class GraphTraverser:
         while queue:
             table, pks, depth, direction = queue.popleft()
 
-            if depth >= config.max_depth and direction == "down":
+            effective_direction = config.table_direction_overrides.get(table, config.direction)
+            if not self._direction_allows(direction, effective_direction):
+                logger.debug(
+                    "Skipping traversal direction due to table override",
+                    table=table,
+                    queued_direction=direction,
+                    effective_direction=effective_direction.value,
+                )
+                continue
+
+            effective_depth = config.table_depth_overrides.get(table, config.max_depth)
+            if depth >= effective_depth and direction == "down":
                 logger.debug(
                     "Max depth reached for downward traversal, skipping",
                     table=table,
                     depth=depth,
-                    max_depth=config.max_depth,
+                    max_depth=effective_depth,
                 )
                 continue
 

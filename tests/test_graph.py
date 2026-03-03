@@ -121,6 +121,38 @@ class TestGraphTraverser:
         # UP traversal is not depth-limited, so users should be found
         assert "users" in result.records
 
+    def test_table_direction_override_blocks_downward_traversal(self, sample_schema, mock_adapter):
+        """Per-table direction override should block queued directions for that table."""
+        traverser = GraphTraverser(sample_schema, mock_adapter)
+        config = TraversalConfig(
+            max_depth=3,
+            direction=TraversalDirection.BOTH,
+            table_direction_overrides={"orders": TraversalDirection.UP},
+        )
+
+        result = traverser.traverse("orders", {(1,)}, config)
+
+        # Parent traversal still allowed
+        assert "users" in result.records
+        # Downward traversal from orders should be blocked
+        assert "order_items" not in result.records
+
+    def test_table_depth_override_limits_downward_from_table(self, sample_schema, mock_adapter):
+        """Per-table depth override should cap DOWN traversal when that table is current."""
+        traverser = GraphTraverser(sample_schema, mock_adapter)
+        config = TraversalConfig(
+            max_depth=5,
+            direction=TraversalDirection.DOWN,
+            table_depth_overrides={"orders": 1},
+        )
+
+        result = traverser.traverse("users", {(1,)}, config)
+
+        # users -> orders should still occur
+        assert "orders" in result.records
+        # orders -> order_items should be blocked by per-table depth cap
+        assert "order_items" not in result.records
+
     def test_exclude_tables(self, sample_schema, mock_adapter):
         """Excluded tables should be skipped."""
         traverser = GraphTraverser(sample_schema, mock_adapter)
@@ -175,13 +207,19 @@ class TestTraversalConfig:
         assert config.max_depth == 3
         assert config.direction == TraversalDirection.BOTH
         assert config.exclude_tables == set()
+        assert config.table_depth_overrides == {}
+        assert config.table_direction_overrides == {}
 
     def test_custom_values(self):
         config = TraversalConfig(
             max_depth=5,
             direction=TraversalDirection.UP,
             exclude_tables={"audit_logs"},
+            table_depth_overrides={"orders": 1},
+            table_direction_overrides={"orders": TraversalDirection.UP},
         )
         assert config.max_depth == 5
         assert config.direction == TraversalDirection.UP
         assert "audit_logs" in config.exclude_tables
+        assert config.table_depth_overrides == {"orders": 1}
+        assert config.table_direction_overrides == {"orders": TraversalDirection.UP}
