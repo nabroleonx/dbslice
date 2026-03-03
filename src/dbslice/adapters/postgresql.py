@@ -341,6 +341,9 @@ class PostgreSQLAdapter(DatabaseAdapter):
         """Fetch rows by primary key values with batching for large sets."""
         if not pk_values:
             return
+        if not pk_columns:
+            logger.warning("Skipping fetch_by_pk for table without primary key", table=table)
+            return
 
         pk_values_list = list(pk_values)
 
@@ -411,6 +414,9 @@ class PostgreSQLAdapter(DatabaseAdapter):
         """
         if not pk_values:
             return
+        if not pk_columns:
+            logger.warning("Skipping fetch_by_pk_chunked for table without primary key", table=table)
+            return
 
         pk_values_list = list(pk_values)
 
@@ -475,6 +481,13 @@ class PostgreSQLAdapter(DatabaseAdapter):
 
         pk_cols = source_table.primary_key
         fk_cols = fk.source_columns
+        if not pk_cols:
+            logger.warning(
+                "Skipping FK lookup from table without primary key",
+                table=table,
+                fk=fk.name,
+            )
+            return set()
 
         result: set[tuple[Any, ...]] = set()
         pk_values_list = list(source_pk_values)

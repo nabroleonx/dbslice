@@ -216,6 +216,87 @@ extraction:
         finally:
             Path(temp_path).unlink()
 
+    def test_from_yaml_database_url_env_placeholder(self, monkeypatch):
+        monkeypatch.setenv(
+            "TEST_DATABASE_URL",
+            "postgresql://placeholder:placeholder@localhost:5432/example",
+        )
+        yaml_content = """
+database:
+  url: ${TEST_DATABASE_URL}
+"""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+            f.write(yaml_content)
+            f.flush()
+            temp_path = f.name
+
+        try:
+            config = DbsliceConfig.from_yaml(temp_path)
+            assert config.database.url == "postgresql://placeholder:placeholder@localhost:5432/example"
+        finally:
+            Path(temp_path).unlink()
+
+    def test_from_yaml_database_url_file_placeholder(self, monkeypatch, tmp_path):
+        url_file = tmp_path / "db_url.txt"
+        url_file.write_text("postgresql://file:user@localhost:5432/from_file\n", encoding="utf-8")
+        monkeypatch.setenv("TEST_DATABASE_URL_FILE", str(url_file))
+
+        yaml_content = """
+database:
+  url: ${TEST_DATABASE_URL_FILE}
+"""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+            f.write(yaml_content)
+            f.flush()
+            temp_path = f.name
+
+        try:
+            config = DbsliceConfig.from_yaml(temp_path)
+            assert config.database.url == "postgresql://file:user@localhost:5432/from_file"
+        finally:
+            Path(temp_path).unlink()
+
+    def test_from_yaml_database_url_missing_env_var(self, monkeypatch):
+        missing_key = "DBSLICE_TEST_MISSING_DATABASE_URL"
+        monkeypatch.delenv(missing_key, raising=False)
+
+        yaml_content = """
+database:
+  url: ${DBSLICE_TEST_MISSING_DATABASE_URL}
+"""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+            f.write(yaml_content)
+            f.flush()
+            temp_path = f.name
+
+        try:
+            with pytest.raises(ConfigFileError) as exc_info:
+                DbsliceConfig.from_yaml(temp_path)
+            assert missing_key in str(exc_info.value)
+        finally:
+            Path(temp_path).unlink()
+
+    def test_from_yaml_database_url_file_placeholder_unreadable(self, monkeypatch, tmp_path):
+        missing_file = tmp_path / "missing_db_url.txt"
+        monkeypatch.setenv("TEST_DATABASE_URL_FILE", str(missing_file))
+
+        yaml_content = """
+database:
+  url: ${TEST_DATABASE_URL_FILE}
+"""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+            f.write(yaml_content)
+            f.flush()
+            temp_path = f.name
+
+        try:
+            with pytest.raises(ConfigFileError) as exc_info:
+                DbsliceConfig.from_yaml(temp_path)
+            assert "TEST_DATABASE_URL_FILE" in str(exc_info.value)
+            assert str(missing_file) in str(exc_info.value)
+        finally:
+            Path(temp_path).unlink()
+
     def test_from_yaml_full_config(self):
         yaml_content = """
 database:
