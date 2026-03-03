@@ -80,6 +80,7 @@ dbslice extract [OPTIONS] DATABASE_URL
 |--------|------|---------|-------------|
 | `--output`, `-o` | TEXT | `sql` | Output format: `sql`, `json`, or `csv` |
 | `--out-file`, `-f` | PATH | - | Write to file instead of stdout |
+| `--output-file-mode` | TEXT | `600` | Output file permissions (octal, e.g. `600`, `640`) |
 | `--json-mode` | TEXT | `auto` | JSON mode: `auto`, `single`, or `per-table` |
 | `--json-pretty` / `--json-compact` | FLAG | Pretty | Enable/disable JSON pretty-printing |
 
@@ -87,7 +88,7 @@ dbslice extract [OPTIONS] DATABASE_URL
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `--anonymize`, `-a` | FLAG | `False` | Enable automatic anonymization of sensitive fields |
+| `--anonymize` / `--no-anonymize`, `-a` | FLAG | Disabled | Enable/disable automatic anonymization of sensitive fields |
 | `--redact`, `-r` | TEXT | - | Additional fields to redact (repeatable, format: `table.column`) |
 
 ##### Validation Options
@@ -95,14 +96,14 @@ dbslice extract [OPTIONS] DATABASE_URL
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | `--validate` / `--no-validate` | FLAG | Enabled | Validate extraction for referential integrity |
-| `--fail-on-validation-error` | FLAG | `False` | Stop execution if validation finds issues |
+| `--fail-on-validation-error` / `--no-fail-on-validation-error` | FLAG | Disabled | Stop execution if validation finds issues |
 
 ##### Performance Options
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `--profile` | FLAG | `False` | Enable query profiling and show statistics |
-| `--stream` | FLAG | `False` | Force streaming mode (requires `--out-file`) |
+| `--profile` / `--no-profile` | FLAG | Disabled | Enable query profiling and show statistics |
+| `--stream` / `--no-stream` | FLAG | Disabled | Force streaming mode (requires `--out-file`) |
 | `--stream-threshold` | INTEGER | `50000` | Auto-enable streaming above this row count |
 | `--stream-chunk-size` | INTEGER | `1000` | Rows per chunk in streaming mode |
 
@@ -410,7 +411,7 @@ anonymization:
 output:
   format: sql
   include_transaction: true
-  include_drop_tables: false
+  include_truncate: false
 ```
 
 ---

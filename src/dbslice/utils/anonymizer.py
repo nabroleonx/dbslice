@@ -1,4 +1,5 @@
 import hashlib
+from fnmatch import fnmatchcase
 from typing import TYPE_CHECKING, Any
 
 from dbslice.constants import DEFAULT_ANONYMIZATION_SEED
@@ -46,14 +47,14 @@ _DEFAULT_ANONYMIZATION_PATTERNS: dict[str, str] = {
     "card_number": "credit_card_number",
     "card": "credit_card_number",
     "passport": "passport_number",
-    "driver_license": "driver_license",
-    "driverlicense": "driver_license",
-    "license_number": "driver_license",
+    "driver_license": "license_plate",
+    "driverlicense": "license_plate",
+    "license_number": "license_plate",
     # Financial
     "iban": "iban",
     "bank_account": "bban",
     "account_number": "bban",
-    "routing_number": "routing_number",
+    "routing_number": "aba",
     "swift": "swift",
     # Network
     "ip_address": "ipv4",
@@ -145,19 +146,98 @@ class DeterministicAnonymizer:
         self.global_seed = seed
         self.fake = Faker()
         self._cache: dict[tuple, Any] = {}
-        self.redact_fields: set[str] = set()  # Set of "table.column"
+        self.redact_fields: set[str] = set()  # Set of normalized "table.column"
+        self.field_providers: dict[str, str] = {}
+        self.custom_patterns: list[tuple[str, str]] = []
+        self.security_null_fields: list[str] = []
         self.schema = schema
         self._fk_columns_cache: dict[str, set[str]] = {}  # Cache of FK columns per table
 
-    def configure(self, redact_fields: list[str]):
+    def _normalize_field(self, table: str, column: str) -> str:
+        """Return normalized table.column field name for matching."""
+        return f"{table}.{column}".lower()
+
+    def _match_glob(self, pattern: str, field: str) -> bool:
+        """Case-insensitive shell-style glob match for table.column patterns."""
+        return fnmatchcase(field, pattern.lower())
+
+    def _resolve_custom_pattern_provider(self, table: str, column: str) -> str | None:
         """
-        Configure additional fields to redact.
+        Resolve provider from custom wildcard patterns.
+
+        Resolution policy:
+        - Most specific pattern wins (longest non-wildcard literal).
+        - Ties are resolved by declaration order (first wins).
+        """
+        field = self._normalize_field(table, column)
+        best_provider: str | None = None
+        best_specificity = -1
+
+        for pattern, provider in self.custom_patterns:
+            if not self._match_glob(pattern, field):
+                continue
+
+            specificity = sum(1 for ch in pattern if ch not in {"*", "?"})
+            if specificity > best_specificity:
+                best_provider = provider
+                best_specificity = specificity
+
+        return best_provider
+
+    def _resolve_exact_field_provider(self, table: str, column: str) -> str | None:
+        """Resolve provider from exact field mappings."""
+        return self.field_providers.get(self._normalize_field(table, column))
+
+    def _resolve_faker_method(self, table: str, column: str) -> str:
+        """
+        Resolve faker method with precedence:
+        1. Exact field provider mapping
+        2. Custom wildcard pattern mapping
+        3. Built-in column substring mapping
+        4. pystr fallback
+        """
+        exact_provider = self._resolve_exact_field_provider(table, column)
+        if exact_provider:
+            return exact_provider
+
+        pattern_provider = self._resolve_custom_pattern_provider(table, column)
+        if pattern_provider:
+            return pattern_provider
+
+        return self.get_faker_method(column)
+
+    def configure(
+        self,
+        redact_fields: list[str],
+        field_providers: dict[str, str] | None = None,
+        patterns: dict[str, str] | None = None,
+        security_null_fields: list[str] | None = None,
+    ):
+        """
+        Configure custom anonymization behavior.
 
         Args:
-            redact_fields: List of fields in "table.column" format
+            redact_fields: List of exact fields in "table.column" format.
+            field_providers: Exact field to faker-provider mappings.
+            patterns: Wildcard table.column glob to faker-provider mappings.
+            security_null_fields: Wildcard table.column globs to force NULL.
         """
-        self.redact_fields = set(redact_fields)
-        logger.info("Anonymizer configured", redact_field_count=len(redact_fields))
+        self.redact_fields = {field.lower() for field in redact_fields}
+        self.field_providers = {
+            field.lower(): provider for field, provider in (field_providers or {}).items()
+        }
+        self.custom_patterns = [
+            (pattern.lower(), provider) for pattern, provider in (patterns or {}).items()
+        ]
+        self.security_null_fields = [pattern.lower() for pattern in (security_null_fields or [])]
+
+        logger.info(
+            "Anonymizer configured",
+            redact_field_count=len(self.redact_fields),
+            exact_provider_count=len(self.field_providers),
+            pattern_count=len(self.custom_patterns),
+            security_null_pattern_count=len(self.security_null_fields),
+        )
 
     def _is_foreign_key_column(self, table: str, column: str) -> bool:
         """
@@ -178,10 +258,8 @@ class DeterministicAnonymizer:
 
         if table not in self._fk_columns_cache:
             fk_columns: set[str] = set()
-            table_info = self.schema.get_table(table)
-            if table_info:
-                for fk in table_info.foreign_keys:
-                    fk_columns.update(fk.source_columns)
+            for _, fk in self.schema.get_parents(table):
+                fk_columns.update(fk.source_columns)
             self._fk_columns_cache[table] = fk_columns
 
         return column in self._fk_columns_cache[table]
@@ -205,10 +283,18 @@ class DeterministicAnonymizer:
         if self._is_foreign_key_column(table, column):
             return False
 
-        full_name = f"{table}.{column}"
+        full_name = self._normalize_field(table, column)
 
         # Explicitly marked for redaction
         if full_name in self.redact_fields:
+            return True
+
+        # Exact field mapping always enables anonymization
+        if full_name in self.field_providers:
+            return True
+
+        # Custom wildcard patterns
+        if self._resolve_custom_pattern_provider(table, column):
             return True
 
         # Pattern matching on column name
@@ -230,6 +316,15 @@ class DeterministicAnonymizer:
         Returns:
             True if column should be NULLed
         """
+        # FK columns are never nulled to preserve referential integrity
+        if self._is_foreign_key_column(table, column):
+            return False
+
+        field = self._normalize_field(table, column)
+        for pattern in self.security_null_fields:
+            if self._match_glob(pattern, field):
+                return True
+
         col_lower = column.lower()
         for pattern in _SECURITY_NULL_PATTERNS:
             if pattern in col_lower:
@@ -262,13 +357,13 @@ class DeterministicAnonymizer:
         in-memory cache keyed by (value, column) to ensure consistency.
 
         Cache Behavior:
-            - Cache key: (str(value), column)
+            - Cache key: (str(value), column, resolved_faker_method)
             - Same value in same column type gets identical output across tables
             - Example: "john@example.com" in any "email" column → same fake email
             - This preserves referential integrity when values appear multiple times
 
         Determinism:
-            - Uses SHA-256 hash of (global_seed:column:value) as Faker seed
+            - Uses SHA-256 hash of (global_seed:column:method:value) as Faker seed
             - Column name is included to differentiate same values in different contexts
             - Example: "john" as first_name vs last_name may produce different outputs
 
@@ -283,23 +378,27 @@ class DeterministicAnonymizer:
         if value is None:
             return None
 
+        # FK integrity has highest priority over nulling/anonymization rules.
+        if self._is_foreign_key_column(table, column):
+            return value
+
         if self.should_null(table, column):
             return None
 
         if not self.should_anonymize(table, column):
             return value
 
-        cache_key = (str(value), column)
+        faker_method = self._resolve_faker_method(table, column)
+        cache_key = (str(value), column, faker_method)
         if cache_key in self._cache:
             return self._cache[cache_key]
 
-        # Generate deterministic seed from global seed + column name + original value
+        # Generate deterministic seed from global seed + column/provider + original value
         # Including column name ensures same value in different column types gets different output
-        hash_input = f"{self.global_seed}:{column}:{value}".encode()
+        hash_input = f"{self.global_seed}:{column}:{faker_method}:{value}".encode()
         seed_int = int.from_bytes(hashlib.sha256(hash_input).digest()[:8], "big")
 
         self.fake.seed_instance(seed_int)
-        faker_method = self.get_faker_method(column)
 
         try:
             anonymized = getattr(self.fake, faker_method)()
@@ -350,4 +449,7 @@ class DeterministicAnonymizer:
         return {
             "cache_size": len(self._cache),
             "redact_fields_count": len(self.redact_fields),
+            "exact_provider_count": len(self.field_providers),
+            "pattern_count": len(self.custom_patterns),
+            "security_null_pattern_count": len(self.security_null_fields),
         }

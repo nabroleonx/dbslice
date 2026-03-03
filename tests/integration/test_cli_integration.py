@@ -547,6 +547,101 @@ class TestCLIStreaming:
             if os.path.exists(output_file):
                 os.unlink(output_file)
 
+
+class TestCLIConfigParity:
+    """Test that runtime flags behave the same with --config."""
+
+    def test_cli_no_validate_with_config(self, ecommerce_schema: dict, test_db_url: str):
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as cfg:
+            cfg.write(f"database:\n  url: {test_db_url}\n")
+            cfg.flush()
+            cfg_path = cfg.name
+
+        try:
+            result = subprocess.run(
+                [
+                    "python",
+                    "-m",
+                    "dbslice",
+                    "extract",
+                    "--config",
+                    cfg_path,
+                    "--seed",
+                    "orders.id=1",
+                    "--no-validate",
+                    "--no-progress",
+                ],
+                capture_output=True,
+                text=True,
+            )
+            assert result.returncode == 0
+        finally:
+            os.unlink(cfg_path)
+
+    def test_cli_profile_with_config(self, ecommerce_schema: dict, test_db_url: str):
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as cfg:
+            cfg.write(f"database:\n  url: {test_db_url}\n")
+            cfg.flush()
+            cfg_path = cfg.name
+
+        try:
+            result = subprocess.run(
+                [
+                    "python",
+                    "-m",
+                    "dbslice",
+                    "extract",
+                    "--config",
+                    cfg_path,
+                    "--seed",
+                    "orders.id=1",
+                    "--profile",
+                ],
+                capture_output=True,
+                text=True,
+            )
+            assert result.returncode == 0
+            assert (
+                "QUERY PERFORMANCE PROFILE" in result.stderr
+                or "Total queries" in result.stderr
+                or "queries" in result.stderr.lower()
+            )
+        finally:
+            os.unlink(cfg_path)
+
+    def test_cli_stream_with_config(self, ecommerce_schema: dict, test_db_url: str):
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as cfg:
+            cfg.write(f"database:\n  url: {test_db_url}\n")
+            cfg.flush()
+            cfg_path = cfg.name
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".sql", delete=False) as out:
+            output_file = out.name
+
+        try:
+            result = subprocess.run(
+                [
+                    "python",
+                    "-m",
+                    "dbslice",
+                    "extract",
+                    "--config",
+                    cfg_path,
+                    "--seed",
+                    "orders.id=1",
+                    "--stream",
+                    "--out-file",
+                    output_file,
+                ],
+                capture_output=True,
+                text=True,
+            )
+            assert result.returncode == 0
+            assert os.path.exists(output_file)
+        finally:
+            os.unlink(cfg_path)
+            if os.path.exists(output_file):
+                os.unlink(output_file)
+
     def test_cli_stream_threshold(self, ecommerce_schema: dict, test_db_url: str):
         """Test --stream-threshold flag."""
         with tempfile.NamedTemporaryFile(mode="w", suffix=".sql", delete=False) as f:
@@ -729,6 +824,8 @@ class TestCLIVersion:
 
     def test_cli_version(self):
         """Test --version flag."""
+        from importlib.metadata import version
+
         result = subprocess.run(
             [
                 "python",
@@ -742,7 +839,7 @@ class TestCLIVersion:
 
         assert result.returncode == 0
         assert "dbslice" in result.stdout
-        # Should show version number
+        assert version("dbslice") in result.stdout
 
 
 class TestCLIHelp:

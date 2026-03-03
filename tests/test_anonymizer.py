@@ -195,6 +195,61 @@ class TestDeterministicAnonymizer:
         # Custom field also anonymized
         assert anon.should_anonymize("users", "custom_field")
 
+    def test_exact_field_provider_is_authoritative(self):
+        anon = DeterministicAnonymizer()
+        anon.configure(
+            [],
+            field_providers={"users.email": "company"},
+            patterns={"users.*": "name"},
+        )
+
+        assert anon._resolve_faker_method("users", "email") == "company"
+        assert anon.should_anonymize("users", "email")
+
+    def test_custom_pattern_provider_applies(self):
+        anon = DeterministicAnonymizer()
+        anon.configure(
+            [],
+            patterns={"users.*_email": "email"},
+        )
+
+        assert anon._resolve_faker_method("users", "backup_email") == "email"
+        assert anon.should_anonymize("users", "backup_email")
+
+    def test_custom_pattern_most_specific_wins(self):
+        anon = DeterministicAnonymizer()
+        anon.configure(
+            [],
+            patterns={
+                "users.*_email": "email",
+                "users.backup_email": "domain_name",
+            },
+        )
+
+        assert anon._resolve_faker_method("users", "backup_email") == "domain_name"
+
+    def test_custom_pattern_tie_uses_first_defined(self):
+        anon = DeterministicAnonymizer()
+        anon.configure(
+            [],
+            patterns={
+                "users.us*r_id": "name",
+                "users.u*er_id": "company",
+            },
+        )
+
+        assert anon._resolve_faker_method("users", "user_id") == "name"
+
+    def test_security_null_fields_applies(self):
+        anon = DeterministicAnonymizer()
+        anon.configure(
+            [],
+            security_null_fields=["users.secret_*", "*.api_key"],
+        )
+
+        assert anon.anonymize_value("shh", "users", "secret_note") is None
+        assert anon.anonymize_value("k123", "services", "api_key") is None
+
     def test_anonymize_row(self):
         anon = DeterministicAnonymizer()
 
@@ -279,6 +334,8 @@ class TestDeterministicAnonymizer:
         assert anon.get_faker_method("address") == "address"
         assert anon.get_faker_method("city") == "city"
         assert anon.get_faker_method("ssn") == "ssn"
+        assert anon.get_faker_method("routing_number") == "aba"
+        assert anon.get_faker_method("driver_license") == "license_plate"
         assert anon.get_faker_method("unknown_field") == "pystr"
 
     def test_anonymize_numeric_values(self):
@@ -368,6 +425,88 @@ class TestDeterministicAnonymizer:
         assert anonymized["id"] == 100
         assert anonymized["user_id"] == 1  # FK preserved!
         assert anonymized["user_email"] != "test@example.com"  # Email anonymized
+
+    def test_security_null_fields_do_not_null_foreign_keys(self):
+        users_table = Table(
+            name="users",
+            schema="public",
+            columns=[
+                Column(name="id", data_type="INTEGER", nullable=False, is_primary_key=True),
+            ],
+            primary_key=("id",),
+            foreign_keys=[],
+        )
+        orders_fk = ForeignKey(
+            name="fk_orders_user",
+            source_table="orders",
+            source_columns=("user_id",),
+            target_table="users",
+            target_columns=("id",),
+            is_nullable=False,
+        )
+        orders_table = Table(
+            name="orders",
+            schema="public",
+            columns=[
+                Column(name="id", data_type="INTEGER", nullable=False, is_primary_key=True),
+                Column(name="user_id", data_type="INTEGER", nullable=False, is_primary_key=False),
+            ],
+            primary_key=("id",),
+            foreign_keys=[orders_fk],
+        )
+        schema = SchemaGraph(
+            tables={"users": users_table, "orders": orders_table},
+            edges=[orders_fk],
+        )
+        anon = DeterministicAnonymizer(schema=schema)
+        anon.configure([], security_null_fields=["orders.user_id"])
+
+        assert anon.should_null("orders", "user_id") is False
+        assert anon.anonymize_value(1, "orders", "user_id") == 1
+
+    def test_foreign_key_detection_works_without_table_fk_population(self):
+        """FK detection should work from graph edges even if table.foreign_keys is empty."""
+        users_table = Table(
+            name="users",
+            schema="public",
+            columns=[
+                Column(name="id", data_type="INTEGER", nullable=False, is_primary_key=True),
+            ],
+            primary_key=("id",),
+            foreign_keys=[],
+        )
+
+        orders_fk = ForeignKey(
+            name="fk_orders_user",
+            source_table="orders",
+            source_columns=("user_id",),
+            target_table="users",
+            target_columns=("id",),
+            is_nullable=False,
+        )
+
+        # NOTE: foreign_keys intentionally left empty on orders_table to simulate
+        # adapter schemas before per-table FK lists are populated.
+        orders_table = Table(
+            name="orders",
+            schema="public",
+            columns=[
+                Column(name="id", data_type="INTEGER", nullable=False, is_primary_key=True),
+                Column(name="user_id", data_type="INTEGER", nullable=False, is_primary_key=False),
+                Column(name="email", data_type="VARCHAR", nullable=True, is_primary_key=False),
+            ],
+            primary_key=("id",),
+            foreign_keys=[],
+        )
+
+        schema = SchemaGraph(
+            tables={"users": users_table, "orders": orders_table},
+            edges=[orders_fk],
+        )
+        anon = DeterministicAnonymizer(schema=schema)
+
+        assert not anon.should_anonymize("orders", "user_id")
+        assert anon.should_anonymize("orders", "email")
 
     def test_column_name_in_hash(self):
         """Hash includes column name for better determinism."""

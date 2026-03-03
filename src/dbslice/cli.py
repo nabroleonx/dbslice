@@ -7,7 +7,12 @@ from rich.status import Status
 
 from dbslice import __version__
 from dbslice.config import ExtractConfig, OutputFormat, SeedSpec, TraversalDirection
-from dbslice.constants import DEFAULT_TRAVERSAL_DEPTH
+from dbslice.constants import (
+    DEFAULT_OUTPUT_FILE_MODE,
+    DEFAULT_STREAMING_CHUNK_SIZE,
+    DEFAULT_STREAMING_THRESHOLD,
+    DEFAULT_TRAVERSAL_DEPTH,
+)
 from dbslice.core.engine import ExtractionEngine
 from dbslice.exceptions import (
     CircularReferenceError,
@@ -22,6 +27,7 @@ from dbslice.input_validators import (
     validate_database_url,
     validate_depth,
     validate_exclude_tables,
+    validate_output_file_mode,
     validate_output_file_path,
     validate_redact_fields,
 )
@@ -30,6 +36,7 @@ from dbslice.output.csv_out import CSVGenerator
 from dbslice.output.json_out import JSONGenerator
 from dbslice.output.sql import SQLGenerator
 from dbslice.utils.connection import parse_database_url
+from dbslice.utils.fileio import write_text_file_secure
 
 logger = get_logger(__name__)
 
@@ -175,6 +182,10 @@ def _build_extract_config(
     validate: bool,
     fail_on_validation_error: bool,
     profile: bool,
+    stream: bool,
+    stream_threshold: int,
+    stream_chunk_size: int,
+    output_file_mode: int,
     schema: str | None = None,
 ) -> ExtractConfig:
     """
@@ -197,6 +208,10 @@ def _build_extract_config(
         validate: Enable extraction validation
         fail_on_validation_error: Stop on validation error
         profile: Enable query profiling
+        stream: Force streaming mode
+        stream_threshold: Auto-enable streaming above this row count
+        stream_chunk_size: Streaming fetch chunk size
+        output_file_mode: Permissions mode for output files
 
     Returns:
         Configured ExtractConfig object
@@ -218,6 +233,10 @@ def _build_extract_config(
         validate=validate,
         fail_on_validation_error=fail_on_validation_error,
         profile=profile,
+        stream=stream,
+        streaming_threshold=stream_threshold,
+        streaming_chunk_size=stream_chunk_size,
+        output_file_mode=output_file_mode,
         schema=schema,
     )
 
@@ -368,6 +387,10 @@ def _generate_and_output_sql(
     no_progress: bool,
     console: Console,
     stdout_console: Console,
+    include_transaction: bool,
+    include_truncate: bool,
+    disable_fk_checks: bool,
+    output_file_mode: int,
     db_schema: str | None = None,
 ) -> None:
     """
@@ -386,7 +409,13 @@ def _generate_and_output_sql(
     db_config = parse_database_url(database_url)
 
     # Use schema from extraction (no reconnection needed)
-    generator = SQLGenerator(db_type=db_config.db_type, schema=db_schema)
+    generator = SQLGenerator(
+        db_type=db_config.db_type,
+        include_transaction=include_transaction,
+        include_truncate=include_truncate,
+        disable_fk_checks=disable_fk_checks,
+        schema=db_schema,
+    )
     sql_output = generator.generate(
         result.tables,
         result.insert_order,
@@ -396,7 +425,7 @@ def _generate_and_output_sql(
     )
 
     if out_file:
-        out_file.write_text(sql_output)
+        write_text_file_secure(out_file, sql_output, file_mode=output_file_mode)
         if not no_progress:
             console.print()
             console.print(
@@ -418,6 +447,7 @@ def _generate_and_output_json(
     no_progress: bool,
     console: Console,
     stdout_console: Console,
+    output_file_mode: int,
 ) -> None:
     """
     Generate JSON output and write to file(s) or stdout.
@@ -453,7 +483,9 @@ def _generate_and_output_json(
         if mode == "single":
             assert isinstance(json_output, str)
             out_file.parent.mkdir(parents=True, exist_ok=True)
-            out_file.write_text(json_output, encoding="utf-8")
+            write_text_file_secure(
+                out_file, json_output, file_mode=output_file_mode, encoding="utf-8"
+            )
             if not no_progress:
                 console.print()
                 console.print(
@@ -464,7 +496,9 @@ def _generate_and_output_json(
             out_file.mkdir(parents=True, exist_ok=True)
             for table_name, table_json in json_output.items():
                 table_file = out_file / f"{table_name}.json"
-                table_file.write_text(table_json, encoding="utf-8")
+                write_text_file_secure(
+                    table_file, table_json, file_mode=output_file_mode, encoding="utf-8"
+                )
             if not no_progress:
                 console.print()
                 console.print(
@@ -500,6 +534,7 @@ def _generate_and_output_csv(
     no_progress: bool,
     console: Console,
     stdout_console: Console,
+    output_file_mode: int,
 ) -> None:
     """
     Generate CSV output and write to file(s) or stdout.
@@ -535,7 +570,9 @@ def _generate_and_output_csv(
         if mode == "single":
             assert isinstance(csv_output, str)
             out_file.parent.mkdir(parents=True, exist_ok=True)
-            out_file.write_text(csv_output, encoding="utf-8")
+            write_text_file_secure(
+                out_file, csv_output, file_mode=output_file_mode, encoding="utf-8"
+            )
             if not no_progress:
                 console.print()
                 console.print(
@@ -546,7 +583,9 @@ def _generate_and_output_csv(
             out_file.mkdir(parents=True, exist_ok=True)
             for table_name, table_csv in csv_output.items():
                 table_file = out_file / f"{table_name}.csv"
-                table_file.write_text(table_csv, encoding="utf-8")
+                write_text_file_secure(
+                    table_file, table_csv, file_mode=output_file_mode, encoding="utf-8"
+                )
             if not no_progress:
                 console.print()
                 console.print(
@@ -577,6 +616,7 @@ def _handle_output_format(
     output_format: OutputFormat,
     result,
     schema,
+    extract_config: ExtractConfig,
     database_url: str,
     out_file: Path | None,
     json_mode: str,
@@ -595,6 +635,7 @@ def _handle_output_format(
         output_format: Desired output format (SQL, JSON, or CSV)
         result: Extraction result
         schema: Database schema
+        extract_config: Extraction config with output behavior flags
         database_url: Database connection URL
         out_file: Optional output file path
         json_mode: JSON output mode ("auto", "single", or "per-table")
@@ -617,6 +658,10 @@ def _handle_output_format(
             no_progress,
             console,
             stdout_console,
+            include_transaction=extract_config.include_transaction,
+            include_truncate=extract_config.include_truncate,
+            disable_fk_checks=extract_config.disable_fk_checks,
+            output_file_mode=extract_config.output_file_mode,
             db_schema=db_schema,
         )
     elif output_format == OutputFormat.JSON:
@@ -629,6 +674,7 @@ def _handle_output_format(
             no_progress,
             console,
             stdout_console,
+            output_file_mode=extract_config.output_file_mode,
         )
     elif output_format == OutputFormat.CSV:
         _generate_and_output_csv(
@@ -640,6 +686,7 @@ def _handle_output_format(
             no_progress,
             console,
             stdout_console,
+            output_file_mode=extract_config.output_file_mode,
         )
 
 
@@ -668,28 +715,28 @@ def extract(
         ),
     ] = None,
     depth: Annotated[
-        int,
+        int | None,
         typer.Option(
             "--depth",
             "-d",
             help="Maximum FK traversal depth",
         ),
-    ] = DEFAULT_TRAVERSAL_DEPTH,
+    ] = None,
     direction: Annotated[
-        str,
+        str | None,
         typer.Option(
             "--direction",
             help="Traversal direction: 'up' (parents), 'down' (children), 'both'",
         ),
-    ] = "both",
+    ] = None,
     output: Annotated[
-        str,
+        str | None,
         typer.Option(
             "--output",
             "-o",
             help="Output format: sql, json, csv",
         ),
-    ] = "sql",
+    ] = None,
     out_file: Annotated[
         Path | None,
         typer.Option(
@@ -723,13 +770,13 @@ def extract(
         ),
     ] = False,
     anonymize: Annotated[
-        bool,
+        bool | None,
         typer.Option(
-            "--anonymize",
+            "--anonymize/--no-anonymize",
             "-a",
-            help="Enable automatic anonymization of detected sensitive fields",
+            help="Enable/disable automatic anonymization of detected sensitive fields",
         ),
-    ] = False,
+    ] = None,
     redact: Annotated[
         list[str] | None,
         typer.Option(
@@ -753,75 +800,82 @@ def extract(
         ),
     ] = False,
     json_mode: Annotated[
-        str,
+        str | None,
         typer.Option(
             "--json-mode",
             help="JSON output mode: 'auto' (default), 'single' (one file), 'per-table' (separate files)",
         ),
-    ] = "auto",
+    ] = None,
     json_pretty: Annotated[
-        bool,
+        bool | None,
         typer.Option(
             "--json-pretty/--json-compact",
             help="Enable/disable JSON pretty-printing (default: enabled)",
         ),
-    ] = True,
+    ] = None,
     csv_mode: Annotated[
-        str,
+        str | None,
         typer.Option(
             "--csv-mode",
             help="CSV output mode: 'auto' (default), 'single' (one file), 'per-table' (separate files)",
         ),
-    ] = "auto",
+    ] = None,
     csv_delimiter: Annotated[
-        str,
+        str | None,
         typer.Option(
             "--csv-delimiter",
             help="CSV field delimiter (default: comma)",
         ),
-    ] = ",",
+    ] = None,
     validate: Annotated[
-        bool,
+        bool | None,
         typer.Option(
             "--validate/--no-validate",
             help="Validate extraction for referential integrity (default: enabled)",
         ),
-    ] = True,
+    ] = None,
     fail_on_validation_error: Annotated[
-        bool,
+        bool | None,
         typer.Option(
-            "--fail-on-validation-error",
+            "--fail-on-validation-error/--no-fail-on-validation-error",
             help="Stop execution if validation finds issues (default: disabled, shows warning)",
         ),
-    ] = False,
+    ] = None,
     profile: Annotated[
-        bool,
+        bool | None,
         typer.Option(
-            "--profile",
+            "--profile/--no-profile",
             help="Enable query profiling and show performance statistics",
         ),
-    ] = False,
+    ] = None,
     stream: Annotated[
-        bool,
+        bool | None,
         typer.Option(
-            "--stream",
+            "--stream/--no-stream",
             help="Force streaming mode (write data directly to file without loading into memory)",
         ),
-    ] = False,
+    ] = None,
     stream_threshold: Annotated[
-        int,
+        int | None,
         typer.Option(
             "--stream-threshold",
             help="Auto-enable streaming mode above this row count (default: 50000)",
         ),
-    ] = 50000,
+    ] = None,
     stream_chunk_size: Annotated[
-        int,
+        int | None,
         typer.Option(
             "--stream-chunk-size",
             help="Number of rows to fetch per chunk in streaming mode (default: 1000)",
         ),
-    ] = 1000,
+    ] = None,
+    output_file_mode: Annotated[
+        str | None,
+        typer.Option(
+            "--output-file-mode",
+            help="Permissions for output files (octal, e.g. 600 or 640).",
+        ),
+    ] = None,
     schema: Annotated[
         str | None,
         typer.Option(
@@ -868,6 +922,24 @@ def extract(
     try:
         setup_logging(verbose=verbose, no_progress=no_progress, structured=False)
         logger.debug("CLI command invoked", command="extract", depth=depth, direction=direction)
+        database_url_from_cli = database_url is not None
+
+        effective_depth = depth if depth is not None else DEFAULT_TRAVERSAL_DEPTH
+        effective_direction = direction if direction is not None else "both"
+        effective_output = output if output is not None else "sql"
+        effective_validate = validate if validate is not None else True
+        effective_fail_on_validation_error = (
+            fail_on_validation_error if fail_on_validation_error is not None else False
+        )
+        effective_profile = profile if profile is not None else False
+        effective_stream = stream if stream is not None else False
+        effective_stream_threshold = (
+            stream_threshold if stream_threshold is not None else DEFAULT_STREAMING_THRESHOLD
+        )
+        effective_stream_chunk_size = (
+            stream_chunk_size if stream_chunk_size is not None else DEFAULT_STREAMING_CHUNK_SIZE
+        )
+        effective_output_file_mode = DEFAULT_OUTPUT_FILE_MODE
 
         loaded_config = None
         if config:
@@ -894,25 +966,52 @@ def extract(
 
         assert database_url is not None  # Guaranteed by the check above
 
+        effective_json_mode = json_mode if json_mode is not None else "auto"
+        effective_json_pretty = json_pretty if json_pretty is not None else True
+        effective_csv_mode = csv_mode if csv_mode is not None else "auto"
+        effective_csv_delimiter = csv_delimiter if csv_delimiter is not None else ","
+
+        if loaded_config:
+            if json_mode is None:
+                effective_json_mode = loaded_config.output.json_mode
+            if json_pretty is None:
+                effective_json_pretty = loaded_config.output.json_pretty
+            if csv_mode is None:
+                effective_csv_mode = loaded_config.output.csv_mode
+            if csv_delimiter is None:
+                effective_csv_delimiter = loaded_config.output.csv_delimiter
+
         try:
             validate_database_url(database_url)
-            validate_depth(depth)
+            validate_depth(effective_depth)
             if out_file:
                 validate_output_file_path(out_file)
+            if output_file_mode is not None:
+                effective_output_file_mode = validate_output_file_mode(output_file_mode)
             if exclude:
                 validate_exclude_tables(exclude)
             if passthrough:
                 validate_exclude_tables(passthrough)  # Same validation as exclude
             if redact:
                 validate_redact_fields(redact)
-            if json_mode not in ("auto", "single", "per-table"):
+            if direction is not None and direction.lower() not in {"up", "down", "both"}:
+                raise ValueError("Invalid direction. Use: up, down, both")
+            if output is not None and output.lower() not in {"sql", "json", "csv"}:
+                raise ValueError("Invalid output format. Use: sql, json, csv")
+            if effective_json_mode not in ("auto", "single", "per-table"):
                 raise ValueError(
-                    f"Invalid json_mode: {json_mode}. Must be 'auto', 'single', or 'per-table'"
+                    f"Invalid json_mode: {effective_json_mode}. Must be 'auto', 'single', or 'per-table'"
                 )
-            if csv_mode not in ("auto", "single", "per-table"):
+            if effective_csv_mode not in ("auto", "single", "per-table"):
                 raise ValueError(
-                    f"Invalid csv_mode: {csv_mode}. Must be 'auto', 'single', or 'per-table'"
+                    f"Invalid csv_mode: {effective_csv_mode}. Must be 'auto', 'single', or 'per-table'"
                 )
+            if len(effective_csv_delimiter) != 1:
+                raise ValueError("--csv-delimiter must be a single character")
+            if effective_stream_threshold <= 0:
+                raise ValueError("--stream-threshold must be greater than 0")
+            if effective_stream_chunk_size <= 0:
+                raise ValueError("--stream-chunk-size must be greater than 0")
         except ValidationError as e:
             console.print(f"[red]Validation Error:[/red] {e}")
             raise typer.Exit(1)
@@ -923,35 +1022,20 @@ def extract(
         seed_specs = _parse_and_validate_seeds(seed or [], console)
 
         if loaded_config:
-            direction_enum = TraversalDirection(direction) if direction != "both" else None
-            output_format_enum = OutputFormat(output) if output != "sql" else None
+            direction_enum = (
+                TraversalDirection(effective_direction.lower()) if direction is not None else None
+            )
+            output_format_enum = (
+                OutputFormat(effective_output.lower()) if output is not None else None
+            )
 
             extract_config = loaded_config.to_extract_config(
                 seeds=seed_specs,
-                database_url=database_url,
-                depth=depth if depth != DEFAULT_TRAVERSAL_DEPTH else None,
+                database_url=database_url if database_url_from_cli else None,
+                depth=depth,
                 direction=direction_enum,
                 output_format=output_format_enum,
                 output_file=str(out_file) if out_file else None,
-                exclude=exclude,
-                passthrough=passthrough,
-                anonymize=anonymize if anonymize else None,
-                redact=redact,
-                verbose=verbose,
-                dry_run=dry_run,
-                no_progress=no_progress,
-                schema=schema,
-            )
-            output_format = extract_config.output_format
-        else:
-            direction_enum, output_format = _parse_enum_parameters(direction, output, console)
-            extract_config = _build_extract_config(
-                database_url=database_url,
-                seeds=seed_specs,
-                depth=depth,
-                direction=direction_enum,
-                output_format=output_format,
-                out_file=out_file,
                 exclude=exclude,
                 passthrough=passthrough,
                 anonymize=anonymize,
@@ -962,11 +1046,42 @@ def extract(
                 validate=validate,
                 fail_on_validation_error=fail_on_validation_error,
                 profile=profile,
+                stream=stream,
+                stream_threshold=stream_threshold,
+                stream_chunk_size=stream_chunk_size,
+                output_file_mode=effective_output_file_mode
+                if output_file_mode is not None
+                else None,
                 schema=schema,
             )
-            extract_config.stream = stream
-            extract_config.streaming_threshold = stream_threshold
-            extract_config.streaming_chunk_size = stream_chunk_size
+            output_format = extract_config.output_format
+        else:
+            direction_enum, output_format = _parse_enum_parameters(
+                effective_direction, effective_output, console
+            )
+            extract_config = _build_extract_config(
+                database_url=database_url,
+                seeds=seed_specs,
+                depth=effective_depth,
+                direction=direction_enum,
+                output_format=output_format,
+                out_file=out_file,
+                exclude=exclude,
+                passthrough=passthrough,
+                anonymize=bool(anonymize) if anonymize is not None else False,
+                redact=redact,
+                verbose=verbose,
+                dry_run=dry_run,
+                no_progress=no_progress,
+                validate=effective_validate,
+                fail_on_validation_error=effective_fail_on_validation_error,
+                profile=effective_profile,
+                stream=effective_stream,
+                stream_threshold=effective_stream_threshold,
+                stream_chunk_size=effective_stream_chunk_size,
+                output_file_mode=effective_output_file_mode,
+                schema=schema,
+            )
 
         if verbose and not no_progress:
             _show_extraction_settings(extract_config, console)
@@ -980,12 +1095,13 @@ def extract(
             output_format=output_format,
             result=result,
             schema=schema,
-            database_url=database_url,
+            extract_config=extract_config,
+            database_url=extract_config.database_url,
             out_file=out_file,
-            json_mode=json_mode,
-            json_pretty=json_pretty,
-            csv_mode=csv_mode,
-            csv_delimiter=csv_delimiter,
+            json_mode=effective_json_mode,
+            json_pretty=effective_json_pretty,
+            csv_mode=effective_csv_mode,
+            csv_delimiter=effective_csv_delimiter,
             no_progress=no_progress,
             console=console,
             stdout_console=stdout_console,
@@ -1102,7 +1218,7 @@ def init(
             ExtractionConfig,
             OutputConfig,
         )
-        from dbslice.utils.connection import get_adapter_for_url, parse_database_url
+        from dbslice.utils.connection import get_adapter_for_url
 
         db_config = parse_database_url(database_url)
         with console.status("[bold blue]Connecting to database...[/bold blue]"):
@@ -1143,13 +1259,17 @@ def init(
                 output=OutputConfig(
                     format="sql",
                     include_transaction=True,
-                    include_drop_tables=False,
+                    include_truncate=False,
                 ),
                 tables={},
             )
 
             yaml_content = config.to_yaml(include_comments=True)
-            out_file.write_text(yaml_content)
+            write_text_file_secure(
+                out_file,
+                yaml_content,
+                file_mode=DEFAULT_OUTPUT_FILE_MODE,
+            )
 
             console.print()
             console.print(f"[green]Configuration written to [bold]{out_file}[/bold][/green]")
@@ -1279,7 +1399,7 @@ def inspect(
             raise typer.Exit(1)
 
         from dbslice.adapters.postgresql import PostgreSQLAdapter
-        from dbslice.utils.connection import get_adapter_for_url, parse_database_url
+        from dbslice.utils.connection import get_adapter_for_url
 
         db_config = parse_database_url(database_url)
         with console.status("[bold blue]Connecting to database...[/bold blue]"):

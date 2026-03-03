@@ -1,22 +1,22 @@
 """Performance tests for query batching and profiling."""
 
+from contextlib import contextmanager
+
 import pytest
 
 from dbslice.adapters.postgresql import PostgreSQLAdapter
+from dbslice.config import ExtractConfig, SeedSpec
+from dbslice.core.engine import ExtractionEngine
 from dbslice.utils.profiling import QueryProfiler
 
 
 def test_fetch_fk_values_batching(sample_schema, mock_adapter):
-    """Test that fetch_fk_values uses batching for large PK sets."""
-    # Create a PostgreSQL adapter with small batch size for testing
+    """Test effective batch sizing for FK lookups with different key widths."""
     adapter = PostgreSQLAdapter(batch_size=10, profiler=None)
-    adapter._conn = None  # Mock connection
-    adapter._schema_cache = sample_schema
-
-    # We can't easily test the batching without a real database connection,
-    # but we can verify the batching logic is in place by checking the code path
-    # This is more of an integration test placeholder
-    assert adapter.batch_size == 10
+    assert adapter._effective_batch_size(1) == 10
+    assert adapter._effective_batch_size(2) == 5
+    assert adapter._effective_batch_size(4) == 2
+    assert adapter._effective_batch_size(20) == 1
 
 
 def test_query_profiler_tracks_queries():
@@ -197,15 +197,17 @@ def test_query_profiler_reset():
 
 
 def test_batch_size_calculation():
-    """Test that batch size is calculated correctly for composite keys."""
+    """Test effective batch sizing and chunk splitting behavior."""
     adapter = PostgreSQLAdapter(batch_size=1000)
+    assert adapter._effective_batch_size(1) == 1000
+    assert adapter._effective_batch_size(2) == 500
+    assert adapter._effective_batch_size(4) == 250
 
-    # For single-column PK, effective batch size should be 1000
-    # For 2-column PK, effective batch size should be 500
-    # For 4-column PK, effective batch size should be 250
-
-    # We can verify this logic by checking the batch_size attribute
-    assert adapter.batch_size == 1000
+    pk_values = [(i,) for i in range(1200)]
+    batches = list(adapter._iter_pk_batches(pk_values, params_per_row=1))
+    assert len(batches) == 2
+    assert len(batches[0][1]) == 1000
+    assert len(batches[1][1]) == 200
 
 
 def test_profiler_integration_with_adapter():
@@ -216,6 +218,42 @@ def test_profiler_integration_with_adapter():
     # Verify profiler is attached
     assert adapter.profiler is profiler
     assert adapter.batch_size == 100
+
+
+def test_engine_passes_configured_batch_size_to_adapter(monkeypatch):
+    """ExtractionEngine should forward db_batch_size to PostgreSQLAdapter."""
+    captured: dict[str, int | None] = {}
+
+    class FakePostgreSQLAdapter:
+        def __init__(self, batch_size=None, profiler=None, schema=None):
+            captured["batch_size"] = batch_size
+
+        def connect(self, url: str) -> None:
+            raise RuntimeError("stop after adapter init")
+
+        def close(self) -> None:
+            return None
+
+        @contextmanager
+        def snapshot_transaction(self):
+            yield
+
+    monkeypatch.setattr(
+        "dbslice.adapters.postgresql.PostgreSQLAdapter",
+        FakePostgreSQLAdapter,
+    )
+
+    config = ExtractConfig(
+        database_url="postgresql://localhost/test",
+        seeds=[SeedSpec.parse("users.id=1")],
+        db_batch_size=777,
+    )
+
+    engine = ExtractionEngine(config)
+    with pytest.raises(RuntimeError, match="stop after adapter init"):
+        engine.extract()
+
+    assert captured["batch_size"] == 777
 
 
 def test_performance_improvement_with_batching(sample_schema, mock_adapter):
@@ -232,24 +270,14 @@ def test_performance_improvement_with_batching(sample_schema, mock_adapter):
     With batching (batch_size=100):
     - 1000 orders would result in 10 queries
     """
-    # This would be tested with an actual database in integration tests
-    # Here we're just documenting the expected behavior
+    adapter = PostgreSQLAdapter(batch_size=100, profiler=None)
+    pk_values = [(i,) for i in range(1000)]
+    batches = list(adapter._iter_pk_batches(pk_values, params_per_row=1))
 
-    num_orders = 1000
-    batch_size = 100
-
-    # Expected queries without batching
-    queries_without_batching = num_orders
-
-    # Expected queries with batching
-    queries_with_batching = (num_orders + batch_size - 1) // batch_size  # Ceiling division
-
-    assert queries_with_batching == 10
-    assert queries_with_batching < queries_without_batching
-
-    # Performance improvement ratio
-    improvement_ratio = queries_without_batching / queries_with_batching
-    assert improvement_ratio == 100  # 100x fewer queries
+    # One-by-one would require 1000 queries.
+    # Batching with size 100 requires only 10 query batches.
+    assert len(batches) == 10
+    assert len(batches) < 1000
 
 
 def test_mock_adapter_fk_fetching(sample_schema, mock_adapter):

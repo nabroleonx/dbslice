@@ -4,7 +4,12 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
-from dbslice.constants import DEFAULT_TRAVERSAL_DEPTH
+from dbslice.constants import (
+    DEFAULT_OUTPUT_FILE_MODE,
+    DEFAULT_STREAMING_CHUNK_SIZE,
+    DEFAULT_STREAMING_THRESHOLD,
+    DEFAULT_TRAVERSAL_DEPTH,
+)
 from dbslice.models import VirtualForeignKey
 
 
@@ -287,7 +292,20 @@ class ExtractConfig:
     fail_on_validation_error: bool = False
     profile: bool = False  # Enable query profiling
     stream: bool = False  # Force streaming mode
-    streaming_threshold: int = 50000  # Auto-enable streaming above this row count
-    streaming_chunk_size: int = 1000  # Rows per chunk in streaming mode
+    streaming_threshold: int = DEFAULT_STREAMING_THRESHOLD
+    streaming_chunk_size: int = DEFAULT_STREAMING_CHUNK_SIZE
+    db_batch_size: int | None = None
+    include_transaction: bool = True
+    include_truncate: bool = False
+    disable_fk_checks: bool = False
+    output_file_mode: int = DEFAULT_OUTPUT_FILE_MODE
+    table_depth_overrides: dict[str, int] = field(default_factory=dict)
+    table_direction_overrides: dict[str, TraversalDirection] = field(default_factory=dict)
+    row_limit_global: int | None = None
+    row_limit_per_table: dict[str, int] = field(default_factory=dict)
+    anonymization_seed: str | None = None
+    anonymization_field_providers: dict[str, str] = field(default_factory=dict)
+    anonymization_patterns: dict[str, str] = field(default_factory=dict)
+    security_null_fields: list[str] = field(default_factory=list)
     virtual_foreign_keys: list[VirtualForeignKey] = field(default_factory=list)
     schema: str | None = None  # PostgreSQL schema name (default: public)

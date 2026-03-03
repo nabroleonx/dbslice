@@ -65,7 +65,7 @@ dbslice init postgresql://localhost/mydb --no-detect-sensitive
 The configuration file uses YAML format with the following top-level structure:
 
 ```yaml
-version: "1.0"           # Config file format version
+version: "1.0"           # Optional config version tag (informational)
 database:                # Database connection settings
 extraction:              # Extraction behavior settings
 anonymization:           # Anonymization configuration
@@ -81,10 +81,10 @@ performance:             # Performance tuning (optional)
 ### version
 
 **Type:** String
-**Required:** Yes
-**Default:** `"1.0"`
+**Required:** No
+**Default:** unset
 
-Specifies the configuration file format version. Currently only `"1.0"` is supported.
+Optional schema/version tag for your own tracking. dbslice currently treats this as informational metadata.
 
 ```yaml
 version: "1.0"
@@ -102,7 +102,7 @@ Database connection configuration.
 database:
   url: string              # Database connection URL (required)
   schema: string           # Schema name (optional, default: "public" for PostgreSQL)
-  options: object          # Additional connection options (optional)
+  options: object          # Optional URL query options (key/value)
 ```
 
 #### Fields
@@ -111,7 +111,7 @@ database:
 |-------|------|----------|---------|-------------|
 | `url` | String | Yes | - | Database connection URL |
 | `schema` | String | No | `"public"` | Schema name for PostgreSQL |
-| `options` | Object | No | `{}` | Additional driver-specific options |
+| `options` | Object | No | `{}` | Extra connection options merged into URL query params |
 
 #### Examples
 
@@ -125,11 +125,11 @@ database:
   url: postgresql://user:pass@localhost:5432/mydb
   schema: public
 
-# With connection options
+# Add query options via config
 database:
-  url: postgresql://user:pass@localhost:5432/mydb
+  url: postgresql://user:pass@localhost:5432/mydb?sslmode=disable
   options:
-    connect_timeout: 10
+    sslmode: require
     application_name: dbslice
 
 # Environment variable (recommended for security)
@@ -140,6 +140,10 @@ database:
 database:
   url: ${DATABASE_URL_FILE}
 ```
+
+`database.options` precedence:
+- Applied only when URL comes from config (`database.url`).
+- If CLI provides database URL, config `database.options` are ignored.
 
 ---
 
@@ -156,6 +160,7 @@ extraction:
   exclude_tables: list[string]     # Tables to exclude
   validate: boolean                # Enable validation
   fail_on_validation_error: boolean  # Stop on validation errors
+  max_rows_per_table: integer      # Optional global row soft-cap
 ```
 
 #### Fields
@@ -167,6 +172,13 @@ extraction:
 | `exclude_tables` | List[String] | No | `[]` | Tables to exclude from extraction |
 | `validate` | Boolean | No | `true` | Validate extraction for referential integrity |
 | `fail_on_validation_error` | Boolean | No | `false` | Stop execution if validation finds issues |
+| `max_rows_per_table` | Integer | No | unlimited | Global per-table soft-cap with integrity closure |
+
+`max_rows_per_table` is deterministic and integrity-first:
+- dbslice first caps each table deterministically by primary key sort.
+- It then adds required parent rows so FK integrity is preserved.
+- Parent closure may exceed the configured cap.
+- If any row limit is configured, streaming mode is disabled automatically.
 
 #### Examples
 
@@ -212,9 +224,9 @@ Anonymization and data redaction configuration.
 anonymization:
   enabled: boolean              # Enable anonymization
   seed: string                  # Deterministic seed
-  fields: object                # Field-specific anonymization
-  patterns: object              # Custom pattern matching (optional)
-  security_null_fields: list    # Fields to set to NULL (optional)
+  fields: object                # Exact table.column -> provider
+  patterns: object              # Wildcard table.column glob -> provider
+  security_null_fields: list    # Wildcard table.column globs to force NULL
 ```
 
 #### Fields
@@ -223,9 +235,17 @@ anonymization:
 |-------|------|----------|---------|-------------|
 | `enabled` | Boolean | No | `false` | Enable automatic anonymization |
 | `seed` | String | No | Generated | Deterministic seed for consistent anonymization |
-| `fields` | Object | No | `{}` | Map of `table.column` to Faker method |
-| `patterns` | Object | No | Built-in | Custom pattern matching rules |
-| `security_null_fields` | List[String] | No | Built-in | Fields to set to NULL (passwords, tokens) |
+| `fields` | Object | No | `{}` | Exact map of `table.column` to Faker method |
+| `patterns` | Object | No | `{}` | Wildcard map of `table.column` glob to Faker method |
+| `security_null_fields` | List[String] | No | `[]` | Wildcard `table.column` globs to force `NULL` |
+
+Notes:
+- `fields` keys must be exact `table.column` entries (no wildcards).
+- `patterns` and `security_null_fields` use shell-style globs (`*`, `?`) on `table.column`.
+- Provider names are validated at config-load time; invalid Faker providers fail fast.
+- Rule precedence: exact `fields` > wildcard `patterns` > built-in pattern matching.
+- If multiple wildcard `patterns` match, the most specific wins (ties use first-defined order).
+- Foreign-key columns are never anonymized or nulled.
 
 #### Field Anonymization Methods
 
@@ -274,6 +294,16 @@ anonymization:
     payments.card_number: credit_card_number
     logs.ip_address: ipv4
 
+# Wildcard anonymization + forced NULL rules
+anonymization:
+  enabled: true
+  patterns:
+    users.*_name: name
+    "*.phone*": phone_number
+  security_null_fields:
+    - users.password*
+    - "*.api_key"
+
 # Complete anonymization config
 anonymization:
   enabled: true
@@ -293,7 +323,7 @@ anonymization:
 
     # Financial data
     payments.card_number: credit_card_number
-    payments.routing_number: routing_number
+    payments.routing_number: aba
     payments.account_number: bban
 
     # Contact information
@@ -323,8 +353,9 @@ Output format and generation configuration.
 output:
   format: string                   # Output format (sql/json/csv)
   include_transaction: boolean     # Wrap in BEGIN/COMMIT
-  include_drop_tables: boolean     # Include DROP TABLE statements
+  include_truncate: boolean        # Include TRUNCATE TABLE statements
   disable_fk_checks: boolean       # Disable FK checks during import
+  file_mode: string                # Output file permissions (octal, e.g. "600")
   json_mode: string                # JSON mode (single/per-table)
   json_pretty: boolean             # Pretty-print JSON
 ```
@@ -335,8 +366,9 @@ output:
 |-------|------|----------|---------|-------------|
 | `format` | String | No | `"sql"` | Output format: `sql`, `json`, or `csv` |
 | `include_transaction` | Boolean | No | `true` | Wrap SQL in BEGIN/COMMIT |
-| `include_drop_tables` | Boolean | No | `false` | Include DROP TABLE statements |
+| `include_truncate` | Boolean | No | `false` | Include `TRUNCATE TABLE ... CASCADE` before inserts |
 | `disable_fk_checks` | Boolean | No | `false` | Disable FK checks during import |
+| `file_mode` | String/Octal | No | `"600"` | File permissions for generated outputs |
 | `json_mode` | String | No | `"single"` | JSON mode: `single` or `per-table` |
 | `json_pretty` | Boolean | No | `true` | Pretty-print JSON output |
 
@@ -351,15 +383,19 @@ output:
 output:
   format: sql
   include_transaction: true
-  include_drop_tables: false
+  include_truncate: false
 
 # SQL for test fixtures (destructive)
 output:
   format: sql
   include_transaction: true
-  include_drop_tables: true  # Drops tables before inserting
+  include_truncate: true     # Truncates tables before inserting
   disable_fk_checks: true    # Disables FK checks during import
+```
 
+`include_drop_tables` is still accepted as a backward-compatible alias for `include_truncate`, but is deprecated.
+
+```yaml
 # JSON output (single file)
 output:
   format: json
@@ -390,10 +426,12 @@ Per-table configuration (optional advanced feature).
 ```yaml
 tables:
   table_name:
-    depth: integer               # Override default depth for this table
-    direction: string            # Override direction for this table
-    exclude: boolean             # Exclude this table
-    anonymize_fields: object     # Table-specific anonymization
+    skip: boolean                # Skip table entirely
+    depth: integer               # Per-table DOWN depth override
+    direction: string            # Per-table direction override: up/down/both
+    max_rows: integer            # Per-table row soft-cap (overrides global)
+    anonymize_fields: object     # Deprecated alias: column -> faker provider
+    exclude: boolean             # Deprecated alias for skip
 ```
 
 #### Examples
@@ -401,44 +439,24 @@ tables:
 ```yaml
 # Per-table overrides
 tables:
-  # Deep traversal for critical table
-  orders:
-    depth: 10
-    direction: both
-
-  # Shallow traversal for large table
+  sessions:
+    skip: true
   audit_logs:
-    depth: 1
-    direction: down
+    skip: true
 
-  # Exclude table entirely
-  temp_data:
-    exclude: true
-
-  # Table-specific anonymization
-  users:
-    anonymize_fields:
-      ssn: ssn
-      passport: passport_number
-      tax_id: ssn
-
-# Complete table configuration
-tables:
   orders:
-    depth: 5
-    direction: both
-    anonymize_fields:
-      customer_note: text
-
-  products:
     depth: 2
     direction: up
 
-  sessions:
-    exclude: true
+  users:
+    max_rows: 100
+    anonymize_fields:
+      phone: phone_number
 
-  audit_logs:
-    exclude: true
+Legacy aliases:
+- `tables.<name>.exclude` is accepted as deprecated alias of `skip`.
+- `tables.<name>.anonymize_fields` is accepted as deprecated alias; prefer `anonymization.fields`.
+- If both `anonymization.fields` and `tables.<name>.anonymize_fields` set the same `table.column`, `anonymization.fields` wins.
 ```
 
 ---
@@ -452,11 +470,11 @@ Performance tuning configuration (optional).
 ```yaml
 performance:
   profile: boolean                    # Enable query profiling
+  batch_size: integer                 # Adapter query batch size
   streaming:
     enabled: boolean                  # Force streaming mode
     threshold: integer                # Auto-enable threshold (rows)
     chunk_size: integer               # Rows per chunk
-  batch_size: integer                 # Database batch size
 ```
 
 #### Fields
@@ -464,10 +482,10 @@ performance:
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
 | `profile` | Boolean | No | `false` | Enable query profiling |
+| `batch_size` | Integer | No | adapter default | Query parameter batch size for PostgreSQL adapter |
 | `streaming.enabled` | Boolean | No | `false` | Force streaming mode |
 | `streaming.threshold` | Integer | No | `50000` | Auto-enable streaming above this row count |
 | `streaming.chunk_size` | Integer | No | `1000` | Rows per chunk in streaming mode |
-| `batch_size` | Integer | No | `1000` | Database batch size for bulk operations |
 
 #### Examples
 
@@ -486,11 +504,11 @@ performance:
 # Aggressive performance tuning
 performance:
   profile: true
+  batch_size: 2000
   streaming:
     enabled: false
     threshold: 50000
     chunk_size: 2000
-  batch_size: 2000           # Larger batches for faster queries
 
 # Memory-constrained environment
 performance:
@@ -498,7 +516,6 @@ performance:
     enabled: true            # Always stream
     threshold: 10000         # Low threshold
     chunk_size: 500          # Small chunks
-  batch_size: 500
 ```
 
 ---
@@ -512,8 +529,8 @@ Command-line arguments take precedence over configuration file settings. This al
 ### Override Rules
 
 1. **CLI always wins**: CLI arguments override config file settings
-2. **Merge behavior**: Some options (like seeds, exclude tables) are merged
-3. **Complete replacement**: Other options (like depth, direction) are replaced
+2. **Merge behavior**: Some options (like anonymization field mappings + CLI `--redact`) are merged
+3. **Complete replacement**: Others (like depth, direction, exclude tables) are replaced
 
 ### Override Examples
 
@@ -543,9 +560,9 @@ dbslice extract --config dbslice.yaml --seed "orders.id=1" --depth 5
 dbslice extract --config dbslice.yaml --seed "orders.id=1" --direction up
 # Result: direction=up (CLI wins)
 
-# Add excluded tables (merged)
+# Override excluded tables
 dbslice extract --config dbslice.yaml --seed "orders.id=1" --exclude temp_data
-# Result: exclude_tables = [audit_logs, sessions, temp_data] (merged)
+# Result: exclude_tables = [temp_data] (CLI replacement)
 
 # Disable anonymization
 dbslice extract --config dbslice.yaml --seed "orders.id=1" --no-anonymize
@@ -565,11 +582,7 @@ Configuration files are validated when loaded. Common validation errors:
 ### Schema Validation
 
 ```yaml
-# ❌ Invalid: Missing version
-database:
-  url: postgresql://localhost/mydb
-
-# ✅ Valid: Version specified
+# ✅ Valid: version is optional
 version: "1.0"
 database:
   url: postgresql://localhost/mydb
@@ -660,7 +673,7 @@ anonymization:
 output:
   format: sql
   include_transaction: true
-  include_drop_tables: false
+  include_truncate: false
 
 performance:
   profile: false
@@ -710,7 +723,7 @@ anonymization:
 
     # Financial data
     payments.card_number: credit_card_number
-    payments.routing_number: routing_number
+    payments.routing_number: aba
     payments.cvv: random_int
 
     # Contact info
@@ -721,7 +734,7 @@ anonymization:
 output:
   format: sql
   include_transaction: true
-  include_drop_tables: false
+  include_truncate: false
 
 performance:
   profile: true
@@ -769,7 +782,7 @@ anonymization:
 output:
   format: sql
   include_transaction: true
-  include_drop_tables: true      # Destructive - for test DB
+  include_truncate: true      # Destructive - for test DB
   disable_fk_checks: false        # Keep FK validation
 
 performance:
@@ -867,7 +880,7 @@ anonymization:
 output:
   format: sql
   include_transaction: true
-  include_drop_tables: false
+  include_truncate: false
 
 performance:
   profile: true
@@ -875,7 +888,6 @@ performance:
     enabled: true           # Always stream
     threshold: 10000        # Low threshold
     chunk_size: 1000
-  batch_size: 1000
 ```
 
 **Usage:**

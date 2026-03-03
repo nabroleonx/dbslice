@@ -6,6 +6,7 @@ which validates extracted *data* for referential integrity post-extraction.
 """
 
 import re
+from os import W_OK, access
 from pathlib import Path
 from typing import Any
 
@@ -13,6 +14,7 @@ from dbslice.constants import (
     MAX_TRAVERSAL_DEPTH,
     MIN_TRAVERSAL_DEPTH,
 )
+from dbslice.utils.fileio import parse_file_mode
 
 
 class ValidationError(Exception):
@@ -85,6 +87,15 @@ DATABASE_URL_PATTERN = re.compile(
 )
 
 SQLITE_URL_PATTERN = re.compile(r"^sqlite:///(.+)$")
+
+
+def _is_subpath(path: Path, base: Path) -> bool:
+    """Return True if path is equal to or contained within base."""
+    try:
+        path.relative_to(base)
+        return True
+    except ValueError:
+        return False
 
 
 def validate_identifier(identifier: str, identifier_type: str = "identifier") -> None:
@@ -396,25 +407,65 @@ def validate_output_file_path(path: str | Path) -> None:
             "Please create the directory first or use an existing directory.",
         )
 
-    # Check if parent is writable (if it exists)
-    if parent.exists() and not parent.is_dir():
-        raise FilePathValidationError(str(path), f"Parent path is not a directory: {parent}")
-
-    # Check for dangerous paths (only if parent exists to avoid false positives)
+    # Check for dangerous paths (using canonical paths to prevent symlink bypasses).
     if parent.exists():
         try:
-            resolved = path_obj.resolve()
-            # Check if trying to write to system directories
-            dangerous_paths = ["/bin", "/sbin", "/usr/bin", "/usr/sbin", "/etc", "/sys", "/proc"]
+            resolved_target = path_obj.resolve()
+            resolved_parent = parent.resolve()
+            # Check if trying to write to system directories.
+            dangerous_paths = [
+                "/bin",
+                "/sbin",
+                "/usr/bin",
+                "/usr/sbin",
+                "/etc",
+                "/private/etc",
+                "/sys",
+                "/proc",
+            ]
             for dangerous in dangerous_paths:
-                if str(resolved).startswith(dangerous):
+                dangerous_path = Path(dangerous).resolve()
+                if _is_subpath(resolved_target, dangerous_path) or _is_subpath(
+                    resolved_parent, dangerous_path
+                ):
                     raise FilePathValidationError(
                         str(path),
-                        f"Cannot write to system directory: {dangerous}\n"
+                        f"Cannot write to system directory: {dangerous_path}\n"
                         "Please choose a different output location.",
                     )
         except (OSError, RuntimeError) as e:
             raise FilePathValidationError(str(path), f"Invalid path: {e}")
+
+    # Check if parent is writable (if it exists)
+    if parent.exists() and not parent.is_dir():
+        raise FilePathValidationError(str(path), f"Parent path is not a directory: {parent}")
+    if parent.exists() and not access(parent, W_OK):
+        raise FilePathValidationError(
+            str(path),
+            f"Parent directory is not writable: {parent}",
+        )
+
+
+def validate_output_file_mode(mode: str | int | None) -> int:
+    """
+    Validate and normalize output file mode.
+
+    Args:
+        mode: Octal string (e.g., "600", "0o600") or integer
+
+    Returns:
+        Parsed integer file mode
+
+    Raises:
+        ValidationError: If mode is invalid
+    """
+    if mode is None:
+        raise ValidationError("File mode cannot be None")
+
+    try:
+        return parse_file_mode(mode)
+    except ValueError as e:
+        raise ValidationError(str(e))
 
 
 def validate_exclude_tables(tables: list[str]) -> None:
