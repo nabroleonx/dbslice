@@ -1,6 +1,28 @@
 # CHANGELOG
 
 
+## v0.3.0 (2026-03-03)
+
+### Features
+
+- Add env-driven config/CLI precedence and PK-less safety guards
+  ([#4](https://github.com/nabroleonx/dbslice/pull/4),
+  [`895058c`](https://github.com/nabroleonx/dbslice/commit/895058c56019c4d737a48a4eaffc951bd5fa98c1))
+
+* feat: add env-driven config/CLI precedence and PK-less safety guards
+
+- Support `database.url` placeholders `${VAR}` and `${VAR_FILE}` in YAML config - Fail fast for
+  missing env vars and unreadable `_FILE` targets - Add extract env defaults: - `DATABASE_URL` -
+  `DBSLICE_DEPTH` - `DBSLICE_DIRECTION` - `DBSLICE_OUTPUT_FORMAT` - `DBSLICE_ANONYMIZE` -
+  `DBSLICE_REDACT_FIELDS` - Enforce precedence: `CLI > Env > Config` - Allow `init` and `inspect` to
+  fallback to `DATABASE_URL` when URL arg is omitted - Harden PK-less behavior: - error on PK-less
+  seed tables - skip non-seed PK-less PK/FK fetch paths safely with warnings - Update docs for
+  placeholder semantics, env formats, and precedence - Add unit/integration coverage for env
+  resolution/fallback and PK-less safety
+
+* test: clarify assertion for PK-less parent table in extraction test
+
+
 ## v0.2.0 (2026-02-28)
 
 ### Features
