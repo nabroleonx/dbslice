@@ -26,12 +26,14 @@ class PostgreSQLAdapter(DatabaseAdapter):
         batch_size: int | None = None,
         profiler: Any = None,
         schema: str | None = None,
+        allow_unsafe_where: bool = False,
     ):
         self._conn: Any = None
         self._schema_name = schema or "public"
         self._schema_cache: SchemaGraph | None = None
         self.batch_size = batch_size or self.DEFAULT_BATCH_SIZE
         self.profiler = profiler
+        self.allow_unsafe_where = allow_unsafe_where
 
     def connect(self, url: str) -> None:
         """Establish PostgreSQL connection."""
@@ -216,7 +218,8 @@ class PostgreSQLAdapter(DatabaseAdapter):
                     a_source.attname AS source_column,
                     target_cls.relname AS target_table,
                     a_target.attname AS target_column,
-                    NOT a_source.attnotnull AS is_nullable
+                    NOT a_source.attnotnull AS is_nullable,
+                    c.condeferrable AS is_deferrable
                 FROM pg_constraint c
                 JOIN pg_class source_cls ON c.conrelid = source_cls.oid
                 JOIN pg_class target_cls ON c.confrelid = target_cls.oid
@@ -239,7 +242,15 @@ class PostgreSQLAdapter(DatabaseAdapter):
             # Group by constraint name for multi-column FKs
             fk_data: dict[str, dict] = {}
             for row in cur.fetchall():
-                constraint_name, source_table, source_col, target_table, target_col, is_nullable = (
+                (
+                    constraint_name,
+                    source_table,
+                    source_col,
+                    target_table,
+                    target_col,
+                    is_nullable,
+                    is_deferrable,
+                ) = (
                     row
                 )
 
@@ -251,6 +262,7 @@ class PostgreSQLAdapter(DatabaseAdapter):
                         "target_table": target_table,
                         "target_columns": [],
                         "is_nullable": bool(is_nullable),
+                        "is_deferrable": bool(is_deferrable),
                     }
 
                 fk_data[constraint_name]["source_columns"].append(source_col)
@@ -265,6 +277,7 @@ class PostgreSQLAdapter(DatabaseAdapter):
                         target_table=data["target_table"],
                         target_columns=tuple(data["target_columns"]),
                         is_nullable=data["is_nullable"],
+                        is_deferrable=data["is_deferrable"],
                     )
                 )
 
@@ -291,7 +304,11 @@ class PostgreSQLAdapter(DatabaseAdapter):
         # Defense-in-depth: validate WHERE clause even if it was validated earlier
         from dbslice.config import validate_where_clause
 
-        validate_where_clause(where_clause, f"{table}:{where_clause}")
+        validate_where_clause(
+            where_clause,
+            f"{table}:{where_clause}",
+            allow_unsafe_subqueries=self.allow_unsafe_where,
+        )
 
         try:
             query = f'SELECT * FROM "{table}" WHERE {where_clause}'

@@ -40,6 +40,7 @@ _EXTRACTION_KEYS = {
     "validate",
     "fail_on_validation_error",
     "max_rows_per_table",
+    "allow_unsafe_where",
 }
 _ANONYMIZATION_KEYS = {
     "enabled",
@@ -290,6 +291,9 @@ class ExtractionConfig:
     max_rows_per_table: int | None = None
     """Global limit on rows per table (None = unlimited)."""
 
+    allow_unsafe_where: bool = False
+    """Allow seed WHERE clauses with subqueries (trusted inputs only)."""
+
 
 @dataclass
 class AnonymizationConfig:
@@ -525,6 +529,7 @@ class DbsliceConfig:
             validate=extraction_data.get("validate", True),
             fail_on_validation_error=extraction_data.get("fail_on_validation_error", False),
             max_rows_per_table=extraction_data.get("max_rows_per_table"),
+            allow_unsafe_where=extraction_data.get("allow_unsafe_where", False),
         )
 
         if not isinstance(extraction.default_depth, int) or extraction.default_depth < 1:
@@ -545,6 +550,8 @@ class DbsliceConfig:
             raise ValueError("'extraction.validate' must be true or false")
         if not isinstance(extraction.fail_on_validation_error, bool):
             raise ValueError("'extraction.fail_on_validation_error' must be true or false")
+        if not isinstance(extraction.allow_unsafe_where, bool):
+            raise ValueError("'extraction.allow_unsafe_where' must be true or false")
         if extraction.max_rows_per_table is not None and (
             not isinstance(extraction.max_rows_per_table, int) or extraction.max_rows_per_table <= 0
         ):
@@ -827,6 +834,7 @@ class DbsliceConfig:
         stream_chunk_size: int | None = None,
         output_file_mode: int | None = None,
         schema: str | None = None,
+        allow_unsafe_where: bool | None = None,
     ) -> ExtractConfig:
         """
         Convert to ExtractConfig for use by the extraction engine.
@@ -855,6 +863,7 @@ class DbsliceConfig:
             stream_chunk_size: Streaming chunk size override (from CLI)
             output_file_mode: Output file permissions override (from CLI)
             schema: PostgreSQL schema name override (from CLI)
+            allow_unsafe_where: Unsafe WHERE override (from CLI/env)
 
         Returns:
             ExtractConfig ready for extraction
@@ -925,6 +934,11 @@ class DbsliceConfig:
             stream_chunk_size
             if stream_chunk_size is not None
             else self.performance.streaming.chunk_size
+        )
+        final_allow_unsafe_where = (
+            allow_unsafe_where
+            if allow_unsafe_where is not None
+            else self.extraction.allow_unsafe_where
         )
         final_output_file_mode = (
             output_file_mode if output_file_mode is not None else self.output.file_mode
@@ -1037,6 +1051,7 @@ class DbsliceConfig:
             security_null_fields=effective_security_null_fields,
             virtual_foreign_keys=virtual_fks,
             schema=final_schema,
+            allow_unsafe_where=final_allow_unsafe_where,
         )
 
     def to_yaml(self, include_comments: bool = True) -> str:
@@ -1093,6 +1108,8 @@ class DbsliceConfig:
             "  fail_on_validation_error: "
             f"{str(self.extraction.fail_on_validation_error).lower()}"
         )
+        if self.extraction.allow_unsafe_where:
+            output.append("  allow_unsafe_where: true")
         if self.extraction.exclude_tables:
             output.append("  exclude_tables:")
             for table in self.extraction.exclude_tables:

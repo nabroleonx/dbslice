@@ -258,6 +258,23 @@ class TestSubqueryBypass:
         with pytest.raises(InsecureWhereClauseError):
             validate_where_clause("id = (  SELECT id FROM users )")
 
+    def test_subquery_allowed_when_explicitly_opted_in(self):
+        """Subqueries can be enabled for trusted complex filters."""
+        validate_where_clause(
+            "id IN (SELECT user_id FROM orders WHERE total > 100)",
+            allow_unsafe_subqueries=True,
+        )
+
+    def test_seedspec_subquery_allowed_when_opted_in(self):
+        """SeedSpec parser supports explicit unsafe-subquery opt-in."""
+        seed = SeedSpec.parse(
+            "users:id IN (SELECT user_id FROM orders WHERE total > 100)",
+            allow_unsafe_subqueries=True,
+        )
+        where, params = seed.to_where_clause(allow_unsafe_subqueries=True)
+        assert "SELECT user_id FROM orders" in where
+        assert params == ()
+
 
 class TestNestedQuotingBypass:
     """Test that unbalanced and tricky quoting doesn't bypass validation."""

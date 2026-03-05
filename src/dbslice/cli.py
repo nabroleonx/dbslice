@@ -186,6 +186,7 @@ def _parse_env_comma_list(var_name: str) -> list[str] | None:
 def _parse_and_validate_seeds(
     seeds: list[str],
     console: Console,
+    allow_unsafe_subqueries: bool = False,
 ) -> list[SeedSpec]:
     """
     Parse and validate seed specifications from CLI arguments.
@@ -203,7 +204,9 @@ def _parse_and_validate_seeds(
     parsed_seeds = []
     for s in seeds:
         try:
-            parsed_seeds.append(SeedSpec.parse(s))
+            parsed_seeds.append(
+                SeedSpec.parse(s, allow_unsafe_subqueries=allow_unsafe_subqueries)
+            )
         except ValueError as e:
             raise InvalidSeedError(s, str(e))
 
@@ -270,6 +273,7 @@ def _build_extract_config(
     stream_chunk_size: int,
     output_file_mode: int,
     schema: str | None = None,
+    allow_unsafe_where: bool = False,
 ) -> ExtractConfig:
     """
     Build ExtractConfig from validated CLI parameters.
@@ -321,6 +325,7 @@ def _build_extract_config(
         streaming_chunk_size=stream_chunk_size,
         output_file_mode=output_file_mode,
         schema=schema,
+        allow_unsafe_where=bool(allow_unsafe_where),
     )
 
 
@@ -402,9 +407,14 @@ def _show_extraction_summary(
 
     if result.has_cycles:
         console.print()
-        console.print("[yellow]⚠ Circular dependencies detected and resolved[/yellow]")
-        console.print(f"  Broken FKs: [cyan]{len(result.broken_fks)}[/cyan]")
-        console.print(f"  Deferred UPDATEs: [cyan]{len(result.deferred_updates)}[/cyan]")
+        if result.used_deferred_cycle_strategy:
+            console.print("[yellow]⚠ Circular dependencies detected (deferred-constraint strategy)[/yellow]")
+            console.print("  Strategy: [cyan]Deterministic order + SET CONSTRAINTS ALL DEFERRED[/cyan]")
+            console.print(f"  Cycles: [cyan]{len(result.cycle_infos)}[/cyan]")
+        else:
+            console.print("[yellow]⚠ Circular dependencies detected and resolved[/yellow]")
+            console.print(f"  Broken FKs: [cyan]{len(result.broken_fks)}[/cyan]")
+            console.print(f"  Deferred UPDATEs: [cyan]{len(result.deferred_updates)}[/cyan]")
         if config.verbose:
             for cycle_info in result.cycle_infos:
                 console.print(f"  [dim]Cycle: {cycle_info}[/dim]")
@@ -966,6 +976,16 @@ def extract(
             help="PostgreSQL schema name (default: 'public')",
         ),
     ] = None,
+    allow_unsafe_where: Annotated[
+        bool | None,
+        typer.Option(
+            "--allow-unsafe-where/--no-allow-unsafe-where",
+            help=(
+                "Allow seed WHERE subqueries (e.g. IN (SELECT ... JOIN ...)). "
+                "Use only with trusted inputs."
+            ),
+        ),
+    ] = None,
 ):
     """
     Extract a database subset starting from seed record(s).
@@ -1034,6 +1054,9 @@ def extract(
             redact_override = redact
             if redact_override is None:
                 redact_override = _parse_env_comma_list("DBSLICE_REDACT_FIELDS")
+            allow_unsafe_where_override = allow_unsafe_where
+            if allow_unsafe_where_override is None:
+                allow_unsafe_where_override = _parse_env_bool("DBSLICE_ALLOW_UNSAFE_WHERE")
         except ValueError as e:
             console.print(f"[red]Validation Error:[/red] {e}")
             raise typer.Exit(1)
@@ -1075,6 +1098,16 @@ def extract(
                 "or in config file under 'database.url'"
             )
             raise typer.Exit(1)
+
+        effective_allow_unsafe_where = (
+            allow_unsafe_where_override
+            if allow_unsafe_where_override is not None
+            else (
+                loaded_config.extraction.allow_unsafe_where
+                if loaded_config is not None
+                else False
+            )
+        )
 
         resolved_database_url = database_url_override
         if not resolved_database_url and loaded_config:
@@ -1138,7 +1171,11 @@ def extract(
             console.print(f"[red]Validation Error:[/red] {e}")
             raise typer.Exit(1)
 
-        seed_specs = _parse_and_validate_seeds(seed or [], console)
+        seed_specs = _parse_and_validate_seeds(
+            seed or [],
+            console,
+            allow_unsafe_subqueries=effective_allow_unsafe_where,
+        )
 
         if loaded_config:
             direction_enum = (
@@ -1176,6 +1213,7 @@ def extract(
                 if output_file_mode is not None
                 else None,
                 schema=schema,
+                allow_unsafe_where=allow_unsafe_where_override,
             )
             output_format = extract_config.output_format
         else:
@@ -1204,6 +1242,7 @@ def extract(
                 stream_chunk_size=effective_stream_chunk_size,
                 output_file_mode=effective_output_file_mode,
                 schema=schema,
+                allow_unsafe_where=effective_allow_unsafe_where,
             )
 
         if verbose and not no_progress:
@@ -1498,6 +1537,59 @@ def _detect_sensitive_fields(schema) -> dict[str, str]:
     return detected
 
 
+def _detect_potential_implicit_fks(schema) -> list[tuple[str, str, str]]:
+    """
+    Detect likely implicit FK relationships using naming heuristics.
+
+    Returns:
+        List of (source_table, source_column, target_table) tuples.
+    """
+    existing_fk_columns: set[tuple[str, str]] = set()
+    for fk in schema.edges:
+        for source_col in fk.source_columns:
+            existing_fk_columns.add((fk.source_table, source_col))
+
+    tables_by_lower = {name.lower(): name for name in schema.tables.keys()}
+
+    candidates: list[tuple[str, str, str]] = []
+
+    for table_name, table in schema.tables.items():
+        for column in table.columns:
+            if (table_name, column.name) in existing_fk_columns:
+                continue
+
+            col_lower = column.name.lower()
+            if not col_lower.endswith("_id"):
+                continue
+
+            base = col_lower[:-3]
+            if not base:
+                continue
+
+            guesses = [base, f"{base}s"]
+            if base.endswith("y") and len(base) > 1:
+                guesses.append(f"{base[:-1]}ies")
+            else:
+                guesses.append(f"{base}es")
+
+            target_table: str | None = None
+            for guess in guesses:
+                actual = tables_by_lower.get(guess)
+                if not actual or actual == table_name:
+                    continue
+                target_info = schema.tables.get(actual)
+                if not target_info or not target_info.primary_key:
+                    continue
+                if "id" in {pk.lower() for pk in target_info.primary_key}:
+                    target_table = actual
+                    break
+
+            if target_table:
+                candidates.append((table_name, column.name, target_table))
+
+    return sorted(candidates, key=lambda item: (item[0], item[1], item[2]))
+
+
 @app.command()
 def inspect(
     database_url: Annotated[
@@ -1594,6 +1686,21 @@ def inspect(
                             f"    [cyan]{child_table}[/cyan].{', '.join(fk.source_columns)}"
                         )
 
+                implicit_candidates = [
+                    candidate
+                    for candidate in _detect_potential_implicit_fks(db_schema)
+                    if candidate[0] == table
+                ]
+                if implicit_candidates:
+                    console.print("\n  [yellow]Potential implicit relationships:[/yellow]")
+                    for src_table, src_col, target_table in implicit_candidates:
+                        console.print(
+                            f"    {src_table}.{src_col} -> [cyan]{target_table}[/cyan].id"
+                        )
+                    console.print(
+                        "    [dim]Tip: add these as virtual_foreign_keys if they are real relationships.[/dim]"
+                    )
+
             else:
                 console.print(f"\n[bold]Tables ({len(db_schema.tables)})[/bold]")
                 for name in sorted(db_schema.tables.keys()):
@@ -1615,6 +1722,19 @@ def inspect(
                     console.print("\n[yellow]Self-references (potential cycles):[/yellow]")
                     for fk in self_refs:
                         console.print(f"  {fk.source_table}.{', '.join(fk.source_columns)}")
+
+                implicit_candidates = _detect_potential_implicit_fks(db_schema)
+                if implicit_candidates:
+                    console.print("\n[yellow]Potential implicit relationships:[/yellow]")
+                    for src_table, src_col, target_table in implicit_candidates[:25]:
+                        console.print(f"  {src_table}.{src_col} -> [cyan]{target_table}[/cyan].id")
+                    if len(implicit_candidates) > 25:
+                        console.print(
+                            f"  [dim]... and {len(implicit_candidates) - 25} more[/dim]"
+                        )
+                    console.print(
+                        "  [dim]Tip: define virtual_foreign_keys for confirmed implicit links.[/dim]"
+                    )
 
         finally:
             adapter.close()

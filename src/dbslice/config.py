@@ -85,7 +85,9 @@ DANGEROUS_PG_FUNCTIONS = {
 }
 
 
-def validate_where_clause(where_clause: str, seed_str: str = "") -> None:
+def validate_where_clause(
+    where_clause: str, seed_str: str = "", allow_unsafe_subqueries: bool = False
+) -> None:
     """
     Validate that a WHERE clause doesn't contain dangerous SQL keywords.
 
@@ -96,6 +98,7 @@ def validate_where_clause(where_clause: str, seed_str: str = "") -> None:
     Args:
         where_clause: The WHERE clause to validate (without the WHERE keyword)
         seed_str: Original seed string for error reporting
+        allow_unsafe_subqueries: Allow subqueries (e.g. IN (SELECT ...)) when true
 
     Raises:
         InsecureWhereClauseError: If dangerous keywords are detected
@@ -140,8 +143,8 @@ def validate_where_clause(where_clause: str, seed_str: str = "") -> None:
         if re.search(pattern, normalized_lower):
             raise InsecureWhereClauseError(seed_str or where_clause, func_name + "()")
 
-    # Block subqueries (SELECT inside parentheses)
-    if re.search(r"\(\s*SELECT\b", normalized_upper):
+    # Block subqueries (SELECT inside parentheses) unless explicitly opted in.
+    if not allow_unsafe_subqueries and re.search(r"\(\s*SELECT\b", normalized_upper):
         raise InsecureWhereClauseError(seed_str or where_clause, "subquery (SELECT)")
 
     # Block type casts with :: (PostgreSQL-specific, can be used to smuggle data)
@@ -168,7 +171,7 @@ class SeedSpec:
     where_clause: str | None  # Raw WHERE clause if provided
 
     @classmethod
-    def parse(cls, seed_str: str) -> "SeedSpec":
+    def parse(cls, seed_str: str, allow_unsafe_subqueries: bool = False) -> "SeedSpec":
         """
         Parse a seed string into a SeedSpec with comprehensive validation.
 
@@ -204,7 +207,11 @@ class SeedSpec:
             except Exception as e:
                 raise ValueError(f"Invalid seed table name: {e}")
 
-            validate_where_clause(where_clause, seed_str)
+            validate_where_clause(
+                where_clause,
+                seed_str,
+                allow_unsafe_subqueries=allow_unsafe_subqueries,
+            )
 
             return cls(
                 table=table,
@@ -256,7 +263,9 @@ class SeedSpec:
                 "Use 'table.column=value' or 'table:WHERE_CLAUSE'"
             )
 
-    def to_where_clause(self) -> tuple[str, tuple[Any, ...]]:
+    def to_where_clause(
+        self, allow_unsafe_subqueries: bool = False
+    ) -> tuple[str, tuple[Any, ...]]:
         """
         Convert to WHERE clause and parameters.
 
@@ -265,7 +274,11 @@ class SeedSpec:
         """
         if self.where_clause:
             # Re-validate in case object was constructed directly (not via parse)
-            validate_where_clause(self.where_clause, f"{self.table}:{self.where_clause}")
+            validate_where_clause(
+                self.where_clause,
+                f"{self.table}:{self.where_clause}",
+                allow_unsafe_subqueries=allow_unsafe_subqueries,
+            )
             return (self.where_clause, ())
         else:
             return (f"{self.column} = %s", (self.value,))
@@ -309,3 +322,4 @@ class ExtractConfig:
     security_null_fields: list[str] = field(default_factory=list)
     virtual_foreign_keys: list[VirtualForeignKey] = field(default_factory=list)
     schema: str | None = None  # PostgreSQL schema name (default: public)
+    allow_unsafe_where: bool = False

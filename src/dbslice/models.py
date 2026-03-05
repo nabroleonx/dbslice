@@ -26,6 +26,7 @@ class ForeignKey:
     target_table: str
     target_columns: tuple[str, ...]
     is_nullable: bool
+    is_deferrable: bool = False
 
     def __hash__(self) -> int:
         """Hash for use in sets and as dict keys."""
@@ -89,6 +90,7 @@ class VirtualForeignKey:
             target_table=self.target_table,
             target_columns=self.target_columns,
             is_nullable=self.is_nullable,
+            is_deferrable=False,
         )
 
 

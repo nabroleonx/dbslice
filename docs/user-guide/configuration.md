@@ -168,6 +168,7 @@ extraction:
   validate: boolean                # Enable validation
   fail_on_validation_error: boolean  # Stop on validation errors
   max_rows_per_table: integer      # Optional global row soft-cap
+  allow_unsafe_where: boolean      # Allow subqueries in seed WHERE clauses (trusted input only)
 ```
 
 #### Fields
@@ -180,12 +181,18 @@ extraction:
 | `validate` | Boolean | No | `true` | Validate extraction for referential integrity |
 | `fail_on_validation_error` | Boolean | No | `false` | Stop execution if validation finds issues |
 | `max_rows_per_table` | Integer | No | unlimited | Global per-table soft-cap with integrity closure |
+| `allow_unsafe_where` | Boolean | No | `false` | Allow seed subqueries like `IN (SELECT ...)` for trusted inputs |
 
 `max_rows_per_table` is deterministic and integrity-first:
 - dbslice first caps each table deterministically by primary key sort.
 - It then adds required parent rows so FK integrity is preserved.
 - Parent closure may exceed the configured cap.
 - If any row limit is configured, streaming mode is disabled automatically.
+
+`allow_unsafe_where` notes:
+- Default is `false` for security.
+- When `true`, subqueries in seed WHERE clauses are allowed (for advanced filtering/join-style selection).
+- Dangerous operations (`DROP`, `DELETE`, comments, stacked queries, etc.) are still blocked.
 
 #### Examples
 
@@ -217,6 +224,10 @@ extraction:
   default_depth: 10
   direction: up
   validate: true
+
+# Trusted advanced WHERE filters (subqueries)
+extraction:
+  allow_unsafe_where: true
 ```
 
 ---
@@ -374,7 +385,7 @@ output:
 | `format` | String | No | `"sql"` | Output format: `sql`, `json`, or `csv` |
 | `include_transaction` | Boolean | No | `true` | Wrap SQL in BEGIN/COMMIT |
 | `include_truncate` | Boolean | No | `false` | Include `TRUNCATE TABLE ... CASCADE` before inserts |
-| `disable_fk_checks` | Boolean | No | `false` | Disable FK checks during import |
+| `disable_fk_checks` | Boolean | No | `false` | For PostgreSQL SQL output, emits deferred-constraint statements and enables non-nullable cycle fallback when FKs are DEFERRABLE |
 | `file_mode` | String/Octal | No | `"600"` | File permissions for generated outputs |
 | `json_mode` | String | No | `"single"` | JSON mode: `single` or `per-table` |
 | `json_pretty` | Boolean | No | `true` | Pretty-print JSON output |
@@ -401,6 +412,10 @@ output:
 ```
 
 `include_drop_tables` is still accepted as a backward-compatible alias for `include_truncate`, but is deprecated.
+
+Cycle note for PostgreSQL SQL imports:
+- When cycles have no nullable FK, dbslice can still generate SQL if `disable_fk_checks: true` and cycle FKs are `DEFERRABLE`.
+- If cycle FKs are not deferrable, extraction fails with a clear error.
 
 ```yaml
 # JSON output (single file)
