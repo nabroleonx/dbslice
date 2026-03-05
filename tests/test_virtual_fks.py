@@ -241,6 +241,7 @@ class TestVirtualForeignKey:
         assert fk.target_table == vfk.target_table
         assert fk.target_columns == vfk.target_columns
         assert fk.is_nullable == vfk.is_nullable
+        assert fk.is_deferrable is False
 
     def test_virtual_fk_hash(self):
         vfk1 = VirtualForeignKey(

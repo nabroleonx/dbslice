@@ -57,6 +57,7 @@ class TestExtractionConfig:
         assert config.validate is True
         assert config.fail_on_validation_error is False
         assert config.max_rows_per_table is None
+        assert config.allow_unsafe_where is False
 
     def test_custom_values(self):
         config = ExtractionConfig(
@@ -489,6 +490,23 @@ extraction:
             with pytest.raises(ConfigFileError) as exc_info:
                 DbsliceConfig.from_yaml(temp_path)
             assert "direction" in str(exc_info.value).lower()
+        finally:
+            Path(temp_path).unlink()
+
+    def test_from_yaml_invalid_allow_unsafe_where_type(self):
+        yaml_content = """
+extraction:
+  allow_unsafe_where: "yes"
+"""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+            f.write(yaml_content)
+            f.flush()
+            temp_path = f.name
+
+        try:
+            with pytest.raises(ConfigFileError) as exc_info:
+                DbsliceConfig.from_yaml(temp_path)
+            assert "allow_unsafe_where" in str(exc_info.value)
         finally:
             Path(temp_path).unlink()
 
@@ -1025,6 +1043,24 @@ class TestToExtractConfig:
         extract_config = config.to_extract_config(seeds=seeds)
         assert extract_config.validate is False
         assert extract_config.fail_on_validation_error is True
+
+    def test_allow_unsafe_where_propagates_from_config(self):
+        config = DbsliceConfig(
+            database=DatabaseConfig(url="postgres://localhost/test"),
+            extraction=ExtractionConfig(allow_unsafe_where=True),
+        )
+        seeds = [SeedSpec.parse("users.id=1")]
+        extract_config = config.to_extract_config(seeds=seeds)
+        assert extract_config.allow_unsafe_where is True
+
+    def test_allow_unsafe_where_cli_override_wins(self):
+        config = DbsliceConfig(
+            database=DatabaseConfig(url="postgres://localhost/test"),
+            extraction=ExtractionConfig(allow_unsafe_where=False),
+        )
+        seeds = [SeedSpec.parse("users.id=1")]
+        extract_config = config.to_extract_config(seeds=seeds, allow_unsafe_where=True)
+        assert extract_config.allow_unsafe_where is True
 
 
 class TestToYaml:

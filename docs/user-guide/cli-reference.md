@@ -61,6 +61,7 @@ dbslice extract [OPTIONS] [DATABASE_URL]
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | `--seed`, `-s` | TEXT | *Required* | Seed record specification (repeatable) |
+| `--allow-unsafe-where` / `--no-allow-unsafe-where` | FLAG | Disabled | Allow subqueries in seed WHERE clauses (trusted inputs only) |
 
 **Seed Formats:**
 - `table.column=value` - Simple equality (e.g., `orders.id=12345`)
@@ -468,6 +469,9 @@ Foreign Keys (23)
 
 Self-references (potential cycles):
   categories.parent_id
+
+Potential implicit relationships:
+  audit_log.user_id -> users.id
 ```
 
 ##### Inspect Specific Table
@@ -570,10 +574,12 @@ Accepted formats:
 |----------|-------------|---------|
 | `DBSLICE_ANONYMIZE` | Enable anonymization | `true` |
 | `DBSLICE_REDACT_FIELDS` | Comma-separated redact fields | `users.ssn,payments.card` |
+| `DBSLICE_ALLOW_UNSAFE_WHERE` | Allow seed subqueries for advanced filters | `true` |
 
 Accepted formats:
 - `DBSLICE_ANONYMIZE`: `1/0`, `true/false`, `yes/no`, or `on/off` (case-insensitive).
 - `DBSLICE_REDACT_FIELDS`: comma-separated `table.column` values.
+- `DBSLICE_ALLOW_UNSAFE_WHERE`: `1/0`, `true/false`, `yes/no`, or `on/off` (case-insensitive).
 
 ### Examples
 

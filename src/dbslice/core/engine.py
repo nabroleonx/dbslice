@@ -8,6 +8,7 @@ from dbslice.adapters.base import DatabaseAdapter
 from dbslice.config import (
     DatabaseType,
     ExtractConfig,
+    OutputFormat,
     SeedSpec,
     TraversalDirection,
 )
@@ -76,6 +77,7 @@ class ExtractionResult:
     cycle_infos: list[Any] = field(default_factory=list)  # list[CycleInfo]
     validation_result: ValidationResult | None = None
     profiler: Any = None  # Optional QueryProfiler
+    used_deferred_cycle_strategy: bool = False
 
     def total_rows(self) -> int:
         """Get total number of extracted rows."""
@@ -169,6 +171,7 @@ class ExtractionEngine:
                 batch_size=self.config.db_batch_size,
                 profiler=profiler,
                 schema=self.config.schema,
+                allow_unsafe_where=self.config.allow_unsafe_where,
             )
         else:
             self.adapter = get_adapter_for_url(self.config.database_url)
@@ -279,7 +282,9 @@ class ExtractionEngine:
 
         self._log("sort", "Sorting tables by dependencies...")
         with logger.timed_operation("topological_sort", table_count=len(all_records)):
-            insert_order, broken_fks, cycle_infos = self._topological_sort(set(all_records.keys()))
+            insert_order, broken_fks, cycle_infos, used_deferred_cycle_strategy = (
+                self._topological_sort(set(all_records.keys()), db_type)
+            )
 
         if broken_fks:
             logger.warning(
@@ -320,10 +325,11 @@ class ExtractionEngine:
                 insert_order=insert_order,
                 stats=dry_run_stats,
                 traversal_path=all_paths,
-                has_cycles=len(broken_fks) > 0,
+                has_cycles=bool(cycle_infos),
                 broken_fks=broken_fks,
                 deferred_updates=[],
                 cycle_infos=cycle_infos,
+                used_deferred_cycle_strategy=used_deferred_cycle_strategy,
             )
 
         total_rows_estimate = sum(len(pks) for pks in all_records.values())
@@ -345,7 +351,13 @@ class ExtractionEngine:
             )
 
             return self._do_streaming_extract(
-                db_type, all_records, insert_order, broken_fks, cycle_infos, all_paths
+                db_type,
+                all_records,
+                insert_order,
+                broken_fks,
+                cycle_infos,
+                all_paths,
+                used_deferred_cycle_strategy,
             )
 
         logger.info(
@@ -465,11 +477,12 @@ class ExtractionEngine:
             insert_order=insert_order,
             stats=stats,
             traversal_path=all_paths,
-            has_cycles=len(broken_fks) > 0,
+            has_cycles=bool(cycle_infos),
             broken_fks=broken_fks,
             deferred_updates=deferred_updates,
             cycle_infos=cycle_infos,
             validation_result=validation_result,
+            used_deferred_cycle_strategy=used_deferred_cycle_strategy,
         )
 
     def _anonymize_table_data(self, table: str, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -642,7 +655,9 @@ class ExtractionEngine:
                 table=seed.table,
             )
 
-        where_clause, params = seed.to_where_clause()
+        where_clause, params = seed.to_where_clause(
+            allow_unsafe_subqueries=self.config.allow_unsafe_where
+        )
         seed_rows = list(self.adapter.fetch_rows(seed.table, where_clause, params))
 
         if not seed_rows:
@@ -714,6 +729,7 @@ class ExtractionEngine:
         broken_fks: list[Any],
         cycle_infos: list[Any],
         all_paths: list[str],
+        used_deferred_cycle_strategy: bool,
     ) -> ExtractionResult:
         """
         Perform streaming extraction to file.
@@ -788,10 +804,14 @@ class ExtractionEngine:
 
         result.traversal_path = all_paths
         result.cycle_infos = cycle_infos
+        result.has_cycles = bool(cycle_infos)
+        result.used_deferred_cycle_strategy = used_deferred_cycle_strategy
 
         return result
 
-    def _topological_sort(self, tables: set[str]) -> tuple[list[str], list[Any], list[Any]]:
+    def _topological_sort(
+        self, tables: set[str], db_type: DatabaseType
+    ) -> tuple[list[str], list[Any], list[Any], bool]:
         """
         Topologically sort tables based on FK dependencies with cycle handling.
 
@@ -799,11 +819,16 @@ class ExtractionEngine:
         If cycles are detected, breaks them at nullable foreign keys.
 
         Returns:
-            Tuple of (insert_order, broken_fks, cycle_infos)
+            Tuple of (insert_order, broken_fks, cycle_infos, used_deferred_cycle_strategy)
         """
         assert self.schema is not None
 
-        from dbslice.core.cycles import break_cycles_at_nullable_fks
+        from dbslice.core.cycles import (
+            CycleInfo,
+            break_cycles_at_nullable_fks,
+            find_cycles_dfs,
+            identify_cycle_fks,
+        )
 
         dependencies: dict[str, set[str]] = {t: set() for t in tables}
 
@@ -815,15 +840,71 @@ class ExtractionEngine:
 
         try:
             insert_order = list(ts.static_order())
-            return insert_order, [], []
+            return insert_order, [], [], False
         except CycleError:
             try:
                 fks_to_break, cycle_infos = break_cycles_at_nullable_fks(
                     self.schema, tables, dependencies
                 )
             except ValueError as e:
-                # No nullable FK found to break cycle
+                cycles = find_cycles_dfs(dependencies)
+                cycle_infos = [
+                    CycleInfo(
+                        tables=cycle,
+                        fks_in_cycle=identify_cycle_fks(self.schema, cycle),
+                    )
+                    for cycle in cycles
+                ]
+                non_deferrable: list[str] = []
+
+                # For JSON/CSV output, deterministic ordering is enough.
+                if self.config.output_format != OutputFormat.SQL:
+                    logger.warning(
+                        "Cycle detected with no nullable FK; using deterministic output order for non-SQL format",
+                        cycle_count=len(cycle_infos),
+                        format=self.config.output_format.value,
+                    )
+                    return sorted(tables), [], cycle_infos, False
+
+                # SQL output can fallback only when explicitly requested and feasible.
+                if (
+                    self.config.disable_fk_checks
+                    and db_type == DatabaseType.POSTGRESQL
+                    and cycle_infos
+                ):
+                    for cycle_info in cycle_infos:
+                        for fk in cycle_info.fks_in_cycle:
+                            if not fk.is_deferrable:
+                                non_deferrable.append(
+                                    f"{fk.source_table}.{', '.join(fk.source_columns)} -> "
+                                    f"{fk.target_table}.{', '.join(fk.target_columns)}"
+                                )
+                    if not non_deferrable:
+                        logger.warning(
+                            "Cycle detected with no nullable FK; using deferred-constraint strategy",
+                            cycle_count=len(cycle_infos),
+                        )
+                        return sorted(tables), [], cycle_infos, True
+
                 from dbslice.exceptions import CircularReferenceError
+
+                if self.config.disable_fk_checks and db_type == DatabaseType.POSTGRESQL:
+                    if non_deferrable:
+                        non_deferrable_msg = "\n".join(f"  - {item}" for item in non_deferrable[:10])
+                        if len(non_deferrable) > 10:
+                            non_deferrable_msg += f"\n  ... and {len(non_deferrable) - 10} more"
+                    elif cycle_infos:
+                        non_deferrable_msg = (
+                            "  (cycle details available, but deferrability could not be determined)"
+                        )
+                    else:
+                        non_deferrable_msg = "  (no cycle details available)"
+                    raise CircularReferenceError(
+                        "Circular dependency requires deferrable constraints for SQL fallback.\n\n"
+                        "Non-deferrable FKs in detected cycles:\n"
+                        f"{non_deferrable_msg}\n\n"
+                        "Make at least one FK nullable (preferred), or change cycle FKs to DEFERRABLE."
+                    )
 
                 raise CircularReferenceError(str(e))
 
@@ -835,7 +916,7 @@ class ExtractionEngine:
             ts = TopologicalSorter(modified_deps)
             insert_order = list(ts.static_order())
 
-            return insert_order, fks_to_break, cycle_infos
+            return insert_order, fks_to_break, cycle_infos, False
 
 
 def extract_subset(

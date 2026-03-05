@@ -45,6 +45,7 @@ def test_extract_cli_flags_override_env(monkeypatch, capture_extract):
     monkeypatch.setenv("DBSLICE_OUTPUT_FORMAT", "json")
     monkeypatch.setenv("DBSLICE_ANONYMIZE", "false")
     monkeypatch.setenv("DBSLICE_REDACT_FIELDS", "users.email,users.phone")
+    monkeypatch.setenv("DBSLICE_ALLOW_UNSAFE_WHERE", "false")
 
     cli.extract(
         database_url="postgresql://cli_user:cli_pass@localhost:5432/clidb",
@@ -54,6 +55,7 @@ def test_extract_cli_flags_override_env(monkeypatch, capture_extract):
         output="sql",
         anonymize=True,
         redact=["users.custom_field"],
+        allow_unsafe_where=True,
         no_progress=True,
     )
 
@@ -63,6 +65,7 @@ def test_extract_cli_flags_override_env(monkeypatch, capture_extract):
     assert extract_config.output_format == OutputFormat.SQL
     assert extract_config.anonymize is True
     assert extract_config.redact_fields == ["users.custom_field"]
+    assert extract_config.allow_unsafe_where is True
 
 
 def test_extract_env_overrides_config_when_cli_missing(monkeypatch, tmp_path, capture_extract):
@@ -75,6 +78,7 @@ def test_extract_env_overrides_config_when_cli_missing(monkeypatch, tmp_path, ca
                 "extraction:",
                 "  default_depth: 7",
                 "  direction: down",
+                "  allow_unsafe_where: false",
                 "anonymization:",
                 "  enabled: false",
                 "output:",
@@ -90,6 +94,7 @@ def test_extract_env_overrides_config_when_cli_missing(monkeypatch, tmp_path, ca
     monkeypatch.setenv("DBSLICE_OUTPUT_FORMAT", "json")
     monkeypatch.setenv("DBSLICE_ANONYMIZE", "true")
     monkeypatch.setenv("DBSLICE_REDACT_FIELDS", "users.ssn,users.passport")
+    monkeypatch.setenv("DBSLICE_ALLOW_UNSAFE_WHERE", "true")
 
     cli.extract(
         config=Path(config_path),
@@ -104,6 +109,7 @@ def test_extract_env_overrides_config_when_cli_missing(monkeypatch, tmp_path, ca
     assert extract_config.output_format == OutputFormat.JSON
     assert extract_config.anonymize is True
     assert extract_config.redact_fields == ["users.ssn", "users.passport"]
+    assert extract_config.allow_unsafe_where is True
 
 
 def test_extract_invalid_env_value_fails_fast(monkeypatch, capsys):
