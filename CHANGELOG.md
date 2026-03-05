@@ -1,6 +1,22 @@
 # CHANGELOG
 
 
+## v0.4.0 (2026-03-05)
+
+### Features
+
+- Add support for unsafe WHERE subqueries in seed specifications
+  ([#5](https://github.com/nabroleonx/dbslice/pull/5),
+  [`d246247`](https://github.com/nabroleonx/dbslice/commit/d246247e7bd401298721b21e964f7ede66e0a030))
+
+- Introduced `--allow-unsafe-where` option in CLI to enable subqueries in seed WHERE clauses. -
+  Updated configuration to include `allow_unsafe_where` field for extraction settings. - Enhanced
+  PostgreSQL adapter to handle unsafe WHERE clauses based on configuration. - Modified validation
+  logic to allow subqueries when explicitly opted in. - Added tests for implicit foreign key
+  detection and cycle fallback behavior. - Updated existing tests to cover new functionality and
+  ensure security measures are in place.
+
+
 ## v0.3.0 (2026-03-03)
 
 ### Features
