@@ -1,6 +1,23 @@
 # CHANGELOG
 
 
+## v0.5.0 (2026-03-06)
+
+### Features
+
+- Add compliance profiles, PII scanning, and column mapping UI
+  ([#6](https://github.com/nabroleonx/dbslice/pull/6),
+  [`243efba`](https://github.com/nabroleonx/dbslice/commit/243efbae718272badb344aa2a7f9edef29f3681a))
+
+- GDPR, HIPAA Safe Harbor, and PCI-DSS profiles that auto-configure masking - Two-phase PII value
+  scanning (pre-mask coverage + post-mask residual) - Custom transformers for Safe Harbor
+  (year_only, zip3, age_bucket) - Free-text redaction, binary column handling, k-anonymity checks -
+  Non-deterministic anonymization mode - Audit manifests with file hashes and optional HMAC signing
+  - Policy gates, source guardrails, breakglass workflow - Local browser UI for column mapping and
+  config export (dbslice map) - inspect `--compliance-check` and verify-manifest commands - 160+ new
+  tests
+
+
 ## v0.4.0 (2026-03-05)
 
 ### Features
