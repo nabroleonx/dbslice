@@ -36,6 +36,8 @@ psql -d localdb < subset.sql
 - **Zero-config start** -- Introspects schema automatically, no data model file required
 - **Single command** -- Extract complete data subsets with one CLI invocation
 - **Safe by default** -- Auto-detects and anonymizes sensitive fields (emails, phones, SSNs, etc.)
+- **Compliance profiles** -- Built-in GDPR, HIPAA Safe Harbor, and PCI-DSS profiles with two-phase PII scanning
+- **Column mapping UI** -- Local browser UI to visually map columns, apply compliance profiles, and export config
 - **Multiple output formats** -- SQL, JSON, and CSV
 - **Streaming** -- Memory-efficient extraction for large datasets (100K+ rows)
 - **Virtual foreign keys** -- Support for Django GenericForeignKeys and implicit relationships via config
@@ -98,6 +100,44 @@ dbslice extract postgres://... --seed "users.id=1" --anonymize
 
 # Redact additional fields
 dbslice extract postgres://... --seed "users.id=1" --anonymize --redact "audit_logs.ip_address"
+```
+
+### Column Mapping UI
+
+Map columns visually, apply compliance profiles, and generate a ready-to-use config — all from a local browser UI.
+
+```bash
+dbslice map postgres://localhost/myapp
+
+# Custom port
+dbslice map postgres://localhost/myapp --port 8888
+
+# Also works with uvx (no install needed)
+uvx dbslice map postgres://localhost/myapp
+```
+
+<table>
+<tr>
+<td width="50%"><strong>Map columns to anonymization rules</strong></td>
+<td width="50%"><strong>Generate and export config</strong></td>
+</tr>
+<tr>
+<td><img src="https://raw.githubusercontent.com/nabroleonx/dbslice/main/docs/assets/mapping.png" alt="Column mapping" width="100%"></td>
+<td><img src="https://raw.githubusercontent.com/nabroleonx/dbslice/main/docs/assets/mapping_instructions.png" alt="Generated config" width="100%"></td>
+</tr>
+</table>
+
+Runs on `127.0.0.1:9473` with a one-time session token — no data leaves your machine. Apply GDPR, HIPAA, or PCI-DSS profiles with one click, review what gets masked, then download the YAML.
+
+### Compliance Profiles
+
+```bash
+# HIPAA Safe Harbor — auto-masks all 18 identifier types
+dbslice extract postgres://... --seed "patients.id=1" --compliance hipaa --compliance-strict
+
+# Multiple profiles + audit manifest
+dbslice extract postgres://... --seed "users.id=1" --compliance gdpr --compliance pci-dss -f subset.sql
+# Produces subset.sql + subset.manifest.json
 ```
 
 ### Output Formats
@@ -170,6 +210,9 @@ dbslice extract --config dbslice.yaml --seed "orders.id=12345"
 | Configuration | Zero-config | Requires model file | Config required | Manual YAML |
 | Setup time | Seconds | Hours | Medium | Medium |
 | Anonymization | Built-in (Faker) | Plugin-based | Advanced transformers | Not available |
+| Compliance profiles | GDPR, HIPAA, PCI-DSS | None | None | None |
+| Column mapping UI | Built-in (local) | None | None | None |
+| PII value scanning | Two-phase (pre/post mask) | None | None | None |
 | Subsetting | FK traversal | FK traversal | Limited | FK traversal |
 | Output formats | SQL, JSON, CSV | SQL, XML, CSV | SQL | SQL only |
 | Cycle handling | Automatic | Manual config | N/A | Manual |

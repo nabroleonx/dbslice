@@ -117,6 +117,153 @@ dbslice extract \
 
 Validation confirms all FK references remain intact after anonymization.
 
+### Non-Deterministic Mode
+
+For stronger privacy guarantees, use non-deterministic mode where each value gets a random Faker seed instead of a deterministic one:
+
+```bash
+dbslice extract \
+  postgres://prod:5432/app \
+  --seed "users.id=1" \
+  --anonymize \
+  --non-deterministic \
+  --out-file strong_privacy.sql
+```
+
+Or in config:
+
+```yaml
+anonymization:
+  enabled: true
+  deterministic: false
+```
+
+**Trade-off**: Same value in different tables may produce different fake values (e.g., "alice@example.com" might become "john@foo.com" in one table and "jane@bar.org" in another). Use deterministic mode when cross-table consistency matters.
+
+**Legal note**: Deterministic anonymization is technically **pseudonymization** under GDPR (same seed + input = same output = reversible). Non-deterministic mode is closer to true anonymization but structural linkage may still allow re-identification.
+
+---
+
+## Compliance Profiles
+
+dbslice includes built-in compliance profiles for GDPR, HIPAA Safe Harbor, and PCI-DSS v4.0. Profiles auto-configure anonymization patterns, run value-based PII scanning, and generate audit manifests.
+
+### Using Compliance Profiles
+
+```bash
+# HIPAA-compliant extraction
+dbslice extract \
+  postgres://medical-db:5432/ehr \
+  --seed "patients.id=1" \
+  --compliance hipaa \
+  --out-file patient_subset.sql
+
+# Multiple profiles
+dbslice extract \
+  postgres://prod:5432/app \
+  --seed "users.id=1" \
+  --compliance gdpr \
+  --compliance pci-dss \
+  --out-file compliant_subset.sql
+```
+
+Or in config:
+
+```yaml
+compliance:
+  profiles: [hipaa, gdpr]
+  strict: true
+  generate_manifest: true
+```
+
+### Available Profiles
+
+| Profile | Description | Key Coverage |
+|---------|-------------|-------------|
+| `gdpr` | EU General Data Protection Regulation | Names, email, phone, address, IP, DOB, SSN, financial IDs, online identifiers |
+| `hipaa` | HIPAA Safe Harbor de-identification | All 18 Safe Harbor identifiers: names, dates, geographic data, phone, fax, email, SSN, medical record numbers, health plan IDs, account numbers, license numbers, vehicle/device IDs, URLs, IPs, biometrics, photos, unique IDs |
+| `pci-dss` | PCI-DSS v4.0 | PAN (credit card), cardholder name, expiration date, service code; CVV/PIN NULLed (never faked) |
+
+### What Compliance Profiles Do
+
+When a profile is active:
+
+1. **Auto-enable anonymization** -- no need for `--anonymize`
+2. **Merge column patterns** -- profile-defined patterns are added to your anonymization config
+3. **Apply security NULL rules** -- profile-specific fields are forced to NULL (e.g., CVV for PCI-DSS)
+4. **Run value-based PII scanning** -- regex patterns scan actual data values (not just column names) for email, SSN, phone numbers, IP addresses, and credit card numbers (with Luhn validation)
+5. **Flag free-text columns** -- columns like `notes`, `comments`, `description` are flagged as potential PII containers
+6. **Generate audit manifest** -- a JSON manifest documenting what was anonymized
+
+### Strict Mode
+
+In strict mode, extraction fails if the PII scanner detects unmasked PII in the output:
+
+```bash
+dbslice extract \
+  postgres://prod:5432/app \
+  --seed "users.id=1" \
+  --compliance hipaa \
+  --compliance-strict \
+  --out-file subset.sql
+```
+
+This ensures no PII slips through to dev/test environments.
+
+### Audit Manifest
+
+When compliance profiles are active (or `--manifest` is passed), dbslice writes a `*.manifest.json` file alongside the output:
+
+```json
+{
+  "extraction_id": "550e8400-e29b-41d4-a716-446655440000",
+  "timestamp": "2026-03-06T10:30:00Z",
+  "dbslice_version": "0.5.0",
+  "masking_type": "deterministic_pseudonymization",
+  "compliance_profiles": ["hipaa"],
+  "seed_hash": "sha256:a1b2c3d4e5f6...",
+  "tables": {
+    "patients": {
+      "rows_extracted": 1,
+      "fields_masked": [
+        {"column": "email", "method": "email", "category": ""},
+        {"column": "ssn", "method": "ssn", "category": ""}
+      ],
+      "fields_nulled": [
+        {"column": "password_hash", "reason": "security_null_pattern"}
+      ],
+      "fields_preserved_fk": ["id", "doctor_id"],
+      "fields_unmasked": ["created_at", "status"]
+    }
+  },
+  "pii_scan_results": [],
+  "output_file_hashes": {
+    "subset.sql": "sha256:a1b2c3..."
+  },
+  "breakglass": {},
+  "signature_algorithm": "",
+  "signature": "",
+  "warnings": [
+    {"table": "visits", "column": "notes", "reason": "Free-text column may contain embedded PII", "severity": "warning"}
+  ]
+}
+```
+
+This manifest provides structured evidence for audit reviews. It documents what dbslice did but is not a substitute for infrastructure-level audit logging.
+
+You can verify output file integrity later:
+
+```bash
+# Verify output file hashes match
+dbslice verify-manifest subset.manifest.json --no-verify-signature
+
+# Verify hashes + HMAC signature (if signing was enabled)
+export DBSLICE_MANIFEST_SIGNING_KEY="your-key"
+dbslice verify-manifest subset.manifest.json
+```
+
+Note: HMAC signing uses a shared symmetric key. It provides tamper detection (was the manifest modified after creation?) but not non-repudiation (it cannot prove *who* created it). For provable origin, wrap with an external signing tool (e.g., cosign, GPG) in your CI pipeline.
+
 ### Compliance Use Cases
 
 **GDPR Right to Erasure** -- extract and anonymize before deletion:
@@ -125,21 +272,70 @@ Validation confirms all FK references remain intact after anonymization.
 dbslice extract \
   postgres://prod:5432/app \
   --seed "users.id=12345" \
-  --anonymize \
+  --compliance gdpr \
   --out-file gdpr_erasure_backup.sql
 ```
 
-**HIPAA De-identification** -- anonymize plus redact clinical fields:
+**HIPAA Safe Harbor De-identification**:
 
 ```bash
 dbslice extract \
   postgres://medical-db:5432/ehr \
   --seed "patients.mrn='12345'" \
-  --anonymize \
-  --redact "patients.social_security" \
-  --redact "visits.notes" \
+  --compliance hipaa \
+  --compliance-strict \
   --out-file patient_deidentified.sql
 ```
+
+**PCI-DSS: No Real PANs in Dev/Test** (Requirement 6.5.6):
+
+```bash
+dbslice extract \
+  postgres://billing:5432/payments \
+  --seed "transactions.id=999" \
+  --compliance pci-dss \
+  --out-file test_transactions.sql
+```
+
+---
+
+## Column Mapping UI
+
+Instead of manually writing anonymization config, use the built-in browser UI to visually map columns.
+
+### Launch
+
+```bash
+dbslice map postgresql://localhost/myapp
+
+# Custom port
+dbslice map postgresql://localhost/myapp --port 8888
+```
+
+This opens a local server on `127.0.0.1:9473` with a session token for security. No data leaves your machine — the browser connects to the local `dbslice` process, which connects to the database.
+
+### Workflow
+
+1. **Introspect** -- Enter your database URL, click Introspect Schema. Only metadata is read.
+2. **Apply profiles** -- Click GDPR, HIPAA, or PCI-DSS to auto-map columns matching the profile's rules.
+3. **Review** -- For each column, set action to Keep, Anonymize, or NULL. Pick a provider from the dropdown.
+4. **Export** -- Click Generate Config to produce a `dbslice.yaml`. Download it.
+5. **Use** -- `dbslice extract --config dbslice.yaml --seed "table.column=value"`
+
+### What the UI shows
+
+- **Table list** with progress bars showing how many columns are mapped per table
+- **Compliance profile chips** that overlay suggested mappings with one click
+- **Provider dropdown** with descriptions (not a raw text input)
+- **Summary panel** at the bottom: click "14 masked" to see all masked fields across all tables, grouped by table
+- **Live YAML preview** that updates as you change mappings
+- **Bulk actions** per table: Anonymize all, NULL all, Reset
+
+### Security
+
+- Server binds to `127.0.0.1` only (not `0.0.0.0`)
+- Random session token generated at startup, required on all API requests
+- No persistent state, no cookies, no external requests (except Tailwind CSS CDN for styling)
 
 ---
 

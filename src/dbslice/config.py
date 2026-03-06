@@ -323,3 +323,20 @@ class ExtractConfig:
     virtual_foreign_keys: list[VirtualForeignKey] = field(default_factory=list)
     schema: str | None = None  # PostgreSQL schema name (default: public)
     allow_unsafe_where: bool = False
+    compliance_profiles: list[str] = field(default_factory=list)
+    compliance_strict: bool = False  # Fail if uncovered PII detected
+    generate_manifest: bool = False  # Generate audit manifest
+    deterministic: bool = True  # False = non-deterministic anonymization
+    compliance_policy_mode: str = "off"  # off, standard, strict
+    compliance_allowed_url_patterns: list[str] = field(default_factory=list)
+    compliance_denied_url_patterns: list[str] = field(default_factory=list)
+    compliance_required_sslmode: str | None = None
+    compliance_require_ci: bool = False
+    compliance_manifest_sign: bool = False
+    compliance_manifest_key_env: str = "DBSLICE_MANIFEST_SIGNING_KEY"
+    freetext_action: str = "warn"  # warn, null, redact
+    binary_action: str = "warn"  # warn, null, sentinel
+    compliance_sample_rows: int = 100  # PII scan sample size during extract
+    k_anonymity_min_k: int | None = None  # None = disabled, 2+ = check
+    k_anonymity_quasi_identifiers: list[str] = field(default_factory=list)
+    k_anonymity_action: str = "warn"  # warn, fail

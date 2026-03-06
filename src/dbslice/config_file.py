@@ -30,6 +30,7 @@ _TOP_LEVEL_KEYS = {
     "performance",
     "tables",
     "virtual_foreign_keys",
+    "compliance",
 }
 _DATABASE_KEYS = {"url", "schema", "options"}
 _EXTRACTION_KEYS = {
@@ -48,6 +49,19 @@ _ANONYMIZATION_KEYS = {
     "fields",
     "patterns",
     "security_null_fields",
+    "deterministic",
+}
+_COMPLIANCE_KEYS = {
+    "profiles",
+    "strict",
+    "generate_manifest",
+    "policy_mode",
+    "allow_url_patterns",
+    "deny_url_patterns",
+    "required_sslmode",
+    "require_ci",
+    "sign_manifest",
+    "manifest_key_env",
 }
 _OUTPUT_KEYS = {
     "format",
@@ -233,6 +247,7 @@ __all__ = [
     "DatabaseConfig",
     "ExtractionConfig",
     "AnonymizationConfig",
+    "ComplianceConfig",
     "OutputConfig",
     "PerformanceConfig",
     "StreamingConfig",
@@ -325,6 +340,44 @@ class AnonymizationConfig:
     Format: ["table_glob.column_glob"]
     Example: ["users.password*", "*.api_key"]
     """
+
+    deterministic: bool = True
+    """Use deterministic anonymization (same input → same output). Set to false for stronger privacy."""
+
+
+@dataclass
+class ComplianceConfig:
+    """Compliance configuration."""
+
+    profiles: list[str] = field(default_factory=list)
+    """Compliance profiles to apply (e.g., ['gdpr', 'hipaa', 'pci-dss'])."""
+
+    strict: bool = False
+    """Fail extraction if uncovered PII is detected by value scanning."""
+
+    generate_manifest: bool = False
+    """Generate an audit manifest alongside extraction output."""
+
+    policy_mode: str = "off"
+    """Policy gate mode: off, standard, or strict."""
+
+    allow_url_patterns: list[str] = field(default_factory=list)
+    """Allow-list regex patterns for source database URLs."""
+
+    deny_url_patterns: list[str] = field(default_factory=list)
+    """Deny-list regex patterns for source database URLs."""
+
+    required_sslmode: str | None = None
+    """Required PostgreSQL sslmode query parameter value."""
+
+    require_ci: bool = False
+    """Require CI environment for compliance-active extraction."""
+
+    sign_manifest: bool = False
+    """Sign compliance manifests with HMAC."""
+
+    manifest_key_env: str = "DBSLICE_MANIFEST_SIGNING_KEY"
+    """Environment variable name containing HMAC signing key."""
 
 
 @dataclass
@@ -438,6 +491,7 @@ class DbsliceConfig:
     database: DatabaseConfig = field(default_factory=DatabaseConfig)
     extraction: ExtractionConfig = field(default_factory=ExtractionConfig)
     anonymization: AnonymizationConfig = field(default_factory=AnonymizationConfig)
+    compliance: ComplianceConfig = field(default_factory=ComplianceConfig)
     output: OutputConfig = field(default_factory=OutputConfig)
     performance: PerformanceConfig = field(default_factory=PerformanceConfig)
     tables: dict[str, TableOverride] = field(default_factory=dict)
@@ -583,12 +637,100 @@ class DbsliceConfig:
         for pattern in security_null_fields:
             _validate_glob_field_pattern(pattern, "'anonymization.security_null_fields'")
 
+        deterministic_val = anon_data.get("deterministic", True)
+        if not isinstance(deterministic_val, bool):
+            raise ValueError("'anonymization.deterministic' must be true or false")
+
         anonymization = AnonymizationConfig(
             enabled=anon_data.get("enabled", False),
             seed=anon_data.get("seed"),
             fields=fields,
             patterns=patterns,
             security_null_fields=security_null_fields,
+            deterministic=deterministic_val,
+        )
+
+        compliance_data = data.get("compliance", {})
+        if not isinstance(compliance_data, dict):
+            raise ValueError("'compliance' section must be a mapping")
+        _validate_unknown_keys("compliance", compliance_data, _COMPLIANCE_KEYS)
+
+        compliance_profiles_raw = compliance_data.get("profiles", [])
+        if not isinstance(compliance_profiles_raw, list):
+            raise ValueError("'compliance.profiles' must be a list")
+
+        # Validate profile names
+        from dbslice.compliance.profiles import get_profile
+        for profile_name in compliance_profiles_raw:
+            if not isinstance(profile_name, str):
+                raise ValueError("'compliance.profiles' entries must be strings")
+            get_profile(profile_name)  # Raises ValueError if unknown
+
+        compliance_strict = compliance_data.get("strict", False)
+        if not isinstance(compliance_strict, bool):
+            raise ValueError("'compliance.strict' must be true or false")
+        compliance_manifest = compliance_data.get("generate_manifest", False)
+        if not isinstance(compliance_manifest, bool):
+            raise ValueError("'compliance.generate_manifest' must be true or false")
+        compliance_policy_mode = compliance_data.get("policy_mode", "off")
+        if compliance_policy_mode not in {"off", "standard", "strict"}:
+            raise ValueError("'compliance.policy_mode' must be one of: off, standard, strict")
+
+        allow_url_patterns = compliance_data.get("allow_url_patterns", [])
+        if not isinstance(allow_url_patterns, list) or not all(
+            isinstance(item, str) for item in allow_url_patterns
+        ):
+            raise ValueError("'compliance.allow_url_patterns' must be a list of strings")
+        for pattern in allow_url_patterns:
+            try:
+                re.compile(pattern)
+            except re.error as e:
+                raise ValueError(
+                    f"'compliance.allow_url_patterns' contains invalid regex '{pattern}': {e}"
+                ) from e
+
+        deny_url_patterns = compliance_data.get("deny_url_patterns", [])
+        if not isinstance(deny_url_patterns, list) or not all(
+            isinstance(item, str) for item in deny_url_patterns
+        ):
+            raise ValueError("'compliance.deny_url_patterns' must be a list of strings")
+        for pattern in deny_url_patterns:
+            try:
+                re.compile(pattern)
+            except re.error as e:
+                raise ValueError(
+                    f"'compliance.deny_url_patterns' contains invalid regex '{pattern}': {e}"
+                ) from e
+
+        required_sslmode = compliance_data.get("required_sslmode")
+        if required_sslmode is not None and (
+            not isinstance(required_sslmode, str) or not required_sslmode.strip()
+        ):
+            raise ValueError("'compliance.required_sslmode' must be a non-empty string when set")
+
+        require_ci = compliance_data.get("require_ci", False)
+        if not isinstance(require_ci, bool):
+            raise ValueError("'compliance.require_ci' must be true or false")
+
+        sign_manifest = compliance_data.get("sign_manifest", False)
+        if not isinstance(sign_manifest, bool):
+            raise ValueError("'compliance.sign_manifest' must be true or false")
+
+        manifest_key_env = compliance_data.get("manifest_key_env", "DBSLICE_MANIFEST_SIGNING_KEY")
+        if not isinstance(manifest_key_env, str) or not manifest_key_env:
+            raise ValueError("'compliance.manifest_key_env' must be a non-empty string")
+
+        compliance = ComplianceConfig(
+            profiles=compliance_profiles_raw,
+            strict=compliance_strict,
+            generate_manifest=compliance_manifest,
+            policy_mode=compliance_policy_mode,
+            allow_url_patterns=allow_url_patterns,
+            deny_url_patterns=deny_url_patterns,
+            required_sslmode=required_sslmode,
+            require_ci=require_ci,
+            sign_manifest=sign_manifest,
+            manifest_key_env=manifest_key_env,
         )
 
         output_data = data.get("output", {})
@@ -805,6 +947,7 @@ class DbsliceConfig:
             database=database,
             extraction=extraction,
             anonymization=anonymization,
+            compliance=compliance,
             output=output,
             performance=performance,
             tables=tables,
@@ -1052,6 +1195,18 @@ class DbsliceConfig:
             virtual_foreign_keys=virtual_fks,
             schema=final_schema,
             allow_unsafe_where=final_allow_unsafe_where,
+            compliance_profiles=self.compliance.profiles,
+            compliance_strict=self.compliance.strict,
+            generate_manifest=self.compliance.generate_manifest
+            or bool(self.compliance.profiles),
+            deterministic=self.anonymization.deterministic,
+            compliance_policy_mode=self.compliance.policy_mode,
+            compliance_allowed_url_patterns=list(self.compliance.allow_url_patterns),
+            compliance_denied_url_patterns=list(self.compliance.deny_url_patterns),
+            compliance_required_sslmode=self.compliance.required_sslmode,
+            compliance_require_ci=self.compliance.require_ci,
+            compliance_manifest_sign=self.compliance.sign_manifest,
+            compliance_manifest_key_env=self.compliance.manifest_key_env,
         )
 
     def to_yaml(self, include_comments: bool = True) -> str:
@@ -1136,6 +1291,38 @@ class DbsliceConfig:
             output.append("  security_null_fields:")
             for pattern in self.anonymization.security_null_fields:
                 output.append(f"    - {_yaml_quote(pattern)}")
+        output.append(f"  deterministic: {str(self.anonymization.deterministic).lower()}")
+        if include_comments:
+            output.append(
+                "  # deterministic=false increases privacy but may reduce repeatability"
+            )
+        output.append("")
+
+        if include_comments:
+            output.append("# Compliance settings")
+        output.append("compliance:")
+        if self.compliance.profiles:
+            output.append("  profiles:")
+            for profile in self.compliance.profiles:
+                output.append(f"    - {profile}")
+        else:
+            output.append("  profiles: []")
+        output.append(f"  strict: {str(self.compliance.strict).lower()}")
+        output.append(f"  generate_manifest: {str(self.compliance.generate_manifest).lower()}")
+        output.append(f"  policy_mode: {_yaml_quote(self.compliance.policy_mode)}")
+        if self.compliance.allow_url_patterns:
+            output.append("  allow_url_patterns:")
+            for pattern in self.compliance.allow_url_patterns:
+                output.append(f"    - {_yaml_quote(pattern)}")
+        if self.compliance.deny_url_patterns:
+            output.append("  deny_url_patterns:")
+            for pattern in self.compliance.deny_url_patterns:
+                output.append(f"    - {_yaml_quote(pattern)}")
+        if self.compliance.required_sslmode:
+            output.append(f"  required_sslmode: {self.compliance.required_sslmode}")
+        output.append(f"  require_ci: {str(self.compliance.require_ci).lower()}")
+        output.append(f"  sign_manifest: {str(self.compliance.sign_manifest).lower()}")
+        output.append(f"  manifest_key_env: {self.compliance.manifest_key_env}")
         output.append("")
 
         if include_comments:

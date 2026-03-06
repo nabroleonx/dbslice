@@ -9,6 +9,8 @@ Complete reference for the dbslice command-line interface.
   - [extract](#extract)
   - [init](#init)
   - [inspect](#inspect)
+  - [map](#map)
+  - [verify-manifest](#verify-manifest)
 - [Global Options](#global-options)
 - [Environment Variables](#environment-variables)
 - [Exit Codes](#exit-codes)
@@ -91,6 +93,20 @@ dbslice extract [OPTIONS] [DATABASE_URL]
 |--------|------|---------|-------------|
 | `--anonymize` / `--no-anonymize`, `-a` | FLAG | Disabled | Enable/disable automatic anonymization of sensitive fields |
 | `--redact`, `-r` | TEXT | - | Additional fields to redact (repeatable, format: `table.column`) |
+| `--non-deterministic` / `--deterministic` | FLAG | Deterministic | Use non-deterministic anonymization (random output each run, stronger privacy but no cross-table consistency) |
+
+##### Compliance Options
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `--compliance` | TEXT | - | Compliance profile(s) to apply (repeatable): `gdpr`, `hipaa`, `pci-dss` |
+| `--compliance-strict` / `--no-compliance-strict` | FLAG | Disabled | Fail extraction if value-based PII scanning detects unmasked PII |
+| `--manifest` / `--no-manifest` | FLAG | Auto | Generate audit manifest (auto-enabled with `--compliance`) |
+| `--allow-raw` | FLAG | Disabled | Breakglass override for compliance policy gates (requires reason + ticket) |
+| `--breakglass-reason` | TEXT | - | Required justification when `--allow-raw` is used |
+| `--ticket-id` | TEXT | - | Required tracking ticket/incident ID when `--allow-raw` is used |
+
+When compliance profiles are active, anonymization is auto-enabled and profile patterns are merged as fallback wildcard rules (`user exact fields > user patterns > profile patterns > built-ins`). Value-based scanning runs in two phases: coverage (pre-mask) identifies where PII exists, then residual (post-mask) checks only unprotected columns. Strict mode fails only on residual detections — it won't false-positive on correctly anonymized fields.
 
 ##### Validation Options
 
@@ -225,6 +241,36 @@ dbslice extract postgresql://localhost/myapp \
   --redact users.ssn \
   --redact payments.card_number \
   --redact customers.tax_id
+```
+
+##### Compliance
+
+```bash
+# Extract with HIPAA compliance profile
+dbslice extract postgresql://localhost/myapp \
+  -s "patients.id=1" \
+  --compliance hipaa
+
+# Multiple compliance profiles with strict mode
+dbslice extract postgresql://localhost/myapp \
+  -s "users.id=1" \
+  --compliance gdpr \
+  --compliance pci-dss \
+  --compliance-strict
+
+# Non-deterministic anonymization for stronger privacy
+dbslice extract postgresql://localhost/myapp \
+  -s "users.id=1" \
+  --compliance gdpr \
+  --non-deterministic
+
+# Generate audit manifest without compliance profile
+dbslice extract postgresql://localhost/myapp \
+  -s "users.id=1" \
+  --anonymize \
+  --manifest \
+  -f subset.sql
+# Writes subset.sql + subset.manifest.json
 ```
 
 ##### JSON Output
@@ -439,6 +485,9 @@ dbslice inspect [OPTIONS] [DATABASE_URL]
 |--------|------|---------|-------------|
 | `--table`, `-t` | TEXT | - | Show details for a specific table |
 | `--schema` | TEXT | `public` | PostgreSQL schema name |
+| `--compliance-check` | TEXT | - | Run compliance coverage check for profile(s): `gdpr`, `hipaa`, `pci-dss` |
+| `--compliance-output` | TEXT | `human` | Compliance report output format: `human` or `json` |
+| `--sample-rows` | INTEGER | `100` | Rows sampled per table for value-based compliance scan |
 
 #### Examples
 
@@ -512,6 +561,101 @@ for table in users orders products; do
   echo
 done
 ```
+
+##### Compliance Coverage Check
+
+```bash
+# Human-readable compliance check
+dbslice inspect postgresql://localhost/myapp \
+  --compliance-check gdpr
+
+# JSON report for CI pipelines
+dbslice inspect postgresql://localhost/myapp \
+  --compliance-check hipaa \
+  --compliance-output json
+```
+
+---
+
+### verify-manifest
+
+Verify manifest file hashes and optional HMAC signature.
+
+#### Synopsis
+
+```bash
+dbslice verify-manifest [OPTIONS] MANIFEST_FILE
+```
+
+#### Options
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `--verify-signature` / `--no-verify-signature` | FLAG | Enabled | Verify HMAC signature when present |
+| `--key-env` | TEXT | `DBSLICE_MANIFEST_SIGNING_KEY` | Env var containing signature key |
+
+#### Examples
+
+```bash
+# Verify output hashes only
+dbslice verify-manifest subset.manifest.json --no-verify-signature
+
+# Verify hashes + HMAC signature
+export DBSLICE_MANIFEST_SIGNING_KEY="super-secret"
+dbslice verify-manifest subset.manifest.json
+```
+
+---
+
+### map
+
+Launch a local browser UI for visually mapping database columns to anonymization rules.
+
+#### Synopsis
+
+```bash
+dbslice map [OPTIONS] [DATABASE_URL]
+```
+
+#### Arguments
+
+| Argument | Description |
+|----------|-------------|
+| `DATABASE_URL` | Optional database connection URL. Can also be entered in the browser UI. |
+
+#### Options
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `--schema` | TEXT | `public` | PostgreSQL schema name |
+| `--port`, `-p` | INTEGER | `9473` | Port for the local server |
+| `--open-browser` / `--no-open-browser` | FLAG | Enabled | Auto-open browser on launch |
+
+#### Security
+
+The server binds to `127.0.0.1` only — it is not accessible from the network. A random session token is generated at startup and required for all requests. The token is passed via the URL when the browser opens.
+
+#### Examples
+
+```bash
+# Launch mapping UI (enter URL in browser)
+dbslice map
+
+# Pre-fill database URL
+dbslice map postgresql://localhost/myapp
+
+# Custom port, no auto-open
+dbslice map postgresql://localhost/myapp --port 8888 --no-open-browser
+```
+
+#### Workflow
+
+1. Enter database URL and click **Introspect Schema**
+2. Optionally click **GDPR**, **HIPAA**, or **PCI-DSS** to apply compliance profile suggestions
+3. Review each column: set action to **Keep**, **Anonymize**, or **NULL**
+4. For anonymized columns, select a provider from the dropdown (e.g., `email`, `ssn`, `hipaa_zip3`)
+5. Click **Generate Config** to export a `dbslice.yaml`
+6. Use the config: `dbslice extract --config dbslice.yaml --seed "table.column=value"`
 
 ---
 

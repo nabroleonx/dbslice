@@ -1,0 +1,591 @@
+<!DOCTYPE html>
+<html lang="en" class="h-full">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>dbslice — Column Mapping</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;1,9..40,400&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<script>
+tailwind.config = {
+  darkMode: 'class',
+  theme: {
+    extend: {
+      fontFamily: {
+        sans: ['DM Sans', 'system-ui', 'sans-serif'],
+        mono: ['JetBrains Mono', 'Consolas', 'monospace'],
+      },
+      colors: {
+        surface: { 950:'#0a0e17', 900:'#0f1420', 850:'#141a28', 800:'#1a2133', 700:'#243049', 600:'#2e3f5e' },
+        accent: { 400:'#2dd4bf', 500:'#14b8a6', 600:'#0d9488', 700:'#0f766e', 900:'#0c3b36' },
+      },
+      fontSize: { '2xs':'0.65rem' },
+    }
+  }
+}
+</script>
+<style>
+  .no-scrollbar::-webkit-scrollbar{display:none}
+  .no-scrollbar{-ms-overflow-style:none;scrollbar-width:none}
+  @keyframes enter{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}
+  @keyframes fadeIn{from{opacity:0}to{opacity:1}}
+  @keyframes pulse-dot{0%,100%{opacity:1}50%{opacity:.4}}
+  .animate-enter{animation:enter .25s ease-out both}
+  .stagger-1{animation-delay:30ms}.stagger-2{animation-delay:60ms}.stagger-3{animation-delay:90ms}
+  .stagger-4{animation-delay:120ms}.stagger-5{animation-delay:150ms}
+  /* YAML highlighting tokens */
+  .yk{color:#2dd4bf}.yv{color:#a5f3fc}.yc{color:#475569;font-style:italic}.yd{color:#fbbf24}
+  /* Subtle row hover glow */
+  .row-glow:hover{background:rgba(45,212,191,.03)}
+  /* Custom scrollbar for main content */
+  .custom-scroll::-webkit-scrollbar{width:6px}
+  .custom-scroll::-webkit-scrollbar-track{background:transparent}
+  .custom-scroll::-webkit-scrollbar-thumb{background:#243049;border-radius:3px}
+  .custom-scroll::-webkit-scrollbar-thumb:hover{background:#2e3f5e}
+  /* Focus ring */
+  *:focus-visible{outline:2px solid #2dd4bf;outline-offset:2px;border-radius:4px}
+  /* Select styling */
+  select{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%23475569' d='M3 5l3 3 3-3'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 8px center;-webkit-appearance:none;appearance:none;padding-right:24px}
+</style>
+</head>
+<body class="h-full bg-surface-950 text-gray-300 text-[13px] font-sans dark antialiased">
+
+<!-- ═══ HELP MODAL ═══ -->
+<div id="helpModal" class="hidden fixed inset-0 z-50 flex items-center justify-center animate-[fadeIn_.12s]" onclick="if(event.target===this)closeHelp()">
+  <div class="absolute inset-0 bg-black/70 backdrop-blur-sm"></div>
+  <div class="relative bg-surface-900 border border-surface-700 rounded-2xl shadow-2xl shadow-black/40 max-w-xl w-full mx-4 max-h-[85vh] overflow-y-auto custom-scroll animate-enter" role="dialog" aria-label="Help">
+    <div class="sticky top-0 z-10 flex items-center justify-between px-6 py-4 border-b border-surface-800 bg-surface-900/95 backdrop-blur-sm rounded-t-2xl">
+      <div>
+        <h2 class="text-[15px] font-semibold text-white">Getting Started</h2>
+        <p class="text-2xs text-gray-500 mt-0.5">5 steps to generate your anonymization config</p>
+      </div>
+      <button onclick="closeHelp()" class="h-7 w-7 flex items-center justify-center rounded-lg text-gray-500 hover:text-white hover:bg-surface-800 transition" aria-label="Close help">
+        <svg class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" d="M6 18L18 6M6 6l12 12"/></svg>
+      </button>
+    </div>
+    <div class="px-6 py-5 space-y-5">
+      <div class="flex gap-3 animate-enter stagger-1">
+        <span class="flex-shrink-0 h-6 w-6 rounded-full bg-accent-900 border border-accent-700 flex items-center justify-center text-2xs font-mono font-medium text-accent-400">1</span>
+        <div>
+          <h3 class="text-[13px] font-medium text-white mb-1">Connect to your database</h3>
+          <p class="text-xs text-gray-400 leading-relaxed">Enter your PostgreSQL URL and click <strong class="text-gray-300">Introspect Schema</strong>. Only metadata is read — no row data is accessed.</p>
+        </div>
+      </div>
+      <div class="flex gap-3 animate-enter stagger-2">
+        <span class="flex-shrink-0 h-6 w-6 rounded-full bg-accent-900 border border-accent-700 flex items-center justify-center text-2xs font-mono font-medium text-accent-400">2</span>
+        <div>
+          <h3 class="text-[13px] font-medium text-white mb-1">Apply a compliance profile</h3>
+          <p class="text-xs text-gray-400 leading-relaxed">Click <strong class="text-gray-300">GDPR</strong>, <strong class="text-gray-300">HIPAA</strong>, or <strong class="text-gray-300">PCI-DSS</strong> to auto-map columns matching the profile's rules. You can apply multiple and override any suggestion.</p>
+        </div>
+      </div>
+      <div class="flex gap-3 animate-enter stagger-3">
+        <span class="flex-shrink-0 h-6 w-6 rounded-full bg-accent-900 border border-accent-700 flex items-center justify-center text-2xs font-mono font-medium text-accent-400">3</span>
+        <div>
+          <h3 class="text-[13px] font-medium text-white mb-1">Review columns</h3>
+          <p class="text-xs text-gray-400 leading-relaxed">For each column, choose:</p>
+          <div class="mt-2 space-y-1.5 text-xs">
+            <div class="flex items-center gap-2"><span class="h-1.5 w-1.5 rounded-full bg-gray-500"></span><strong class="text-gray-300">Keep</strong> <span class="text-gray-500">— passes through unchanged</span></div>
+            <div class="flex items-center gap-2"><span class="h-1.5 w-1.5 rounded-full bg-accent-500"></span><strong class="text-gray-300">Anonymize</strong> <span class="text-gray-500">— replaced with fake data</span></div>
+            <div class="flex items-center gap-2"><span class="h-1.5 w-1.5 rounded-full bg-amber-500"></span><strong class="text-gray-300">NULL</strong> <span class="text-gray-500">— set to NULL (passwords, tokens)</span></div>
+          </div>
+        </div>
+      </div>
+      <div class="flex gap-3 animate-enter stagger-4">
+        <span class="flex-shrink-0 h-6 w-6 rounded-full bg-accent-900 border border-accent-700 flex items-center justify-center text-2xs font-mono font-medium text-accent-400">4</span>
+        <div>
+          <h3 class="text-[13px] font-medium text-white mb-1">Choose providers</h3>
+          <p class="text-xs text-gray-400 leading-relaxed">When you select Anonymize, pick a provider from the dropdown. Each provider generates a specific type of fake data:</p>
+          <div class="grid grid-cols-2 gap-x-6 gap-y-0.5 mt-2 text-xs">
+            <span><code class="text-accent-400 font-mono">email</code> <span class="text-gray-600">fake email</span></span>
+            <span><code class="text-accent-400 font-mono">name</code> <span class="text-gray-600">full name</span></span>
+            <span><code class="text-accent-400 font-mono">phone_number</code> <span class="text-gray-600">phone</span></span>
+            <span><code class="text-accent-400 font-mono">ssn</code> <span class="text-gray-600">SSN</span></span>
+            <span><code class="text-accent-400 font-mono">ipv4</code> <span class="text-gray-600">IP address</span></span>
+            <span><code class="text-accent-400 font-mono">year_only</code> <span class="text-gray-600">HIPAA date</span></span>
+            <span><code class="text-accent-400 font-mono">hipaa_zip3</code> <span class="text-gray-600">Safe Harbor ZIP</span></span>
+            <span><code class="text-accent-400 font-mono">credit_card_number</code> <span class="text-gray-600">PAN</span></span>
+          </div>
+        </div>
+      </div>
+      <div class="flex gap-3 animate-enter stagger-5">
+        <span class="flex-shrink-0 h-6 w-6 rounded-full bg-accent-900 border border-accent-700 flex items-center justify-center text-2xs font-mono font-medium text-accent-400">5</span>
+        <div>
+          <h3 class="text-[13px] font-medium text-white mb-1">Generate &amp; export</h3>
+          <p class="text-xs text-gray-400 leading-relaxed">Click <strong class="text-gray-300">Generate Config</strong> to create a <code class="bg-surface-800 text-accent-400 px-1 py-0.5 rounded font-mono text-2xs">dbslice.yaml</code>. Download and use:</p>
+          <div class="mt-2 bg-surface-950 rounded-lg px-3 py-2 font-mono text-2xs text-gray-400 border border-surface-800">dbslice extract --config dbslice.yaml --seed "table.column=value"</div>
+        </div>
+      </div>
+      <div class="pt-2 border-t border-surface-800">
+        <p class="text-2xs text-gray-600"><kbd class="bg-surface-800 border border-surface-700 px-1.5 py-0.5 rounded text-gray-400">Ctrl+Z</kbd> / <kbd class="bg-surface-800 border border-surface-700 px-1.5 py-0.5 rounded text-gray-400">Cmd+Z</kbd> to undo &middot; <kbd class="bg-surface-800 border border-surface-700 px-1.5 py-0.5 rounded text-gray-400">Esc</kbd> to close modals</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══ HEADER ═══ -->
+<header class="flex items-center gap-3 px-5 h-12 border-b border-surface-800/80 bg-surface-950/90 backdrop-blur-md sticky top-0 z-30">
+  <div class="flex items-center gap-2.5">
+    <svg class="h-5 w-5 text-accent-500" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3.75 6A2.25 2.25 0 016 3.75h2.25A2.25 2.25 0 0110.5 6v2.25a2.25 2.25 0 01-2.25 2.25H6A2.25 2.25 0 013.75 8.25V6z"/><path d="M3.75 15.75A2.25 2.25 0 016 13.5h2.25a2.25 2.25 0 012.25 2.25V18a2.25 2.25 0 01-2.25 2.25H6A2.25 2.25 0 013.75 18v-2.25z" opacity=".5"/><path d="M13.5 6a2.25 2.25 0 012.25-2.25H18A2.25 2.25 0 0120.25 6v2.25A2.25 2.25 0 0118 10.5h-2.25A2.25 2.25 0 0113.5 8.25V6z" opacity=".5"/><path d="M13.5 15.75a2.25 2.25 0 012.25-2.25H18a2.25 2.25 0 012.25 2.25V18A2.25 2.25 0 0118 20.25h-2.25a2.25 2.25 0 01-2.25-2.25v-2.25z"/></svg>
+    <h1 class="text-[15px] font-semibold tracking-tight text-white">dbslice</h1>
+    <span class="rounded-md bg-accent-900/60 border border-accent-700/40 px-2 py-0.5 text-2xs font-medium text-accent-400 tracking-wide uppercase">Map</span>
+  </div>
+  <span class="flex-1"></span>
+  <span id="connBadge" class="hidden items-center gap-1.5 text-xs text-gray-400 mr-2">
+    <span class="h-1.5 w-1.5 rounded-full bg-emerald-400" style="animation:pulse-dot 2s infinite"></span>
+    <span id="connLabel" class="font-mono text-2xs">Connected</span>
+  </span>
+  <button onclick="openHelp()" class="h-7 px-2.5 flex items-center gap-1.5 rounded-lg border border-surface-700 text-xs text-gray-500 hover:text-gray-300 hover:border-surface-600 hover:bg-surface-900 transition-all" aria-label="Open help guide">
+    <svg class="h-3.5 w-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 015.83 1c0 2-3 3-3 3m.08 4h.01"/></svg>
+    Guide
+  </button>
+  <span class="text-2xs text-gray-700 font-mono">127.0.0.1</span>
+</header>
+
+<!-- ═══ LAYOUT ═══ -->
+<div class="flex h-[calc(100vh-48px)]">
+
+  <!-- Mobile sidebar toggle -->
+  <button id="sidebarToggle" class="lg:hidden fixed bottom-5 left-5 z-40 h-11 w-11 rounded-xl bg-accent-600 shadow-lg shadow-accent-600/20 text-white flex items-center justify-center" aria-label="Toggle sidebar" onclick="document.getElementById('sidebar').classList.toggle('-translate-x-full')">
+    <svg class="h-5 w-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" d="M3.75 6.75h16.5M3.75 12h16.5m-16.5 5.25h16.5"/></svg>
+  </button>
+
+  <!-- ═══ SIDEBAR ═══ -->
+  <aside id="sidebar" class="fixed lg:static inset-y-12 left-0 z-20 w-[280px] flex flex-col border-r border-surface-800/80 bg-surface-950 transition-transform duration-200 lg:translate-x-0 -translate-x-full lg:flex-shrink-0">
+
+    <!-- Connection -->
+    <div class="p-4 border-b border-surface-800/60 space-y-2.5">
+      <h3 class="text-2xs font-semibold uppercase tracking-[.08em] text-gray-600">Connection</h3>
+      <div>
+        <label for="dbUrl" class="block text-2xs text-gray-500 mb-1">Database URL</label>
+        <input id="dbUrl" type="text" class="w-full rounded-lg border border-surface-700 bg-surface-900 px-3 py-[7px] text-xs font-mono text-gray-200 placeholder:text-gray-700 focus:border-accent-600 focus:ring-1 focus:ring-accent-600/30 outline-none transition" placeholder="postgresql://user:pass@host:5432/db" autocomplete="off" spellcheck="false">
+      </div>
+      <div>
+        <label for="dbSchema" class="block text-2xs text-gray-500 mb-1">Schema</label>
+        <input id="dbSchema" type="text" class="w-full rounded-lg border border-surface-700 bg-surface-900 px-3 py-[7px] text-xs font-mono text-gray-200 placeholder:text-gray-700 focus:border-accent-600 focus:ring-1 focus:ring-accent-600/30 outline-none transition" placeholder="public" value="public">
+      </div>
+      <button id="btnIntrospect" class="w-full rounded-lg bg-accent-600 hover:bg-accent-500 px-3 py-[7px] text-xs font-medium text-white disabled:opacity-40 disabled:cursor-not-allowed transition-colors" onclick="introspect()">Introspect Schema</button>
+    </div>
+
+    <!-- Compliance profiles -->
+    <div class="p-4 border-b border-surface-800/60">
+      <h3 class="text-2xs font-semibold uppercase tracking-[.08em] text-gray-600 mb-2.5">Compliance Profiles</h3>
+      <div id="profileChips" class="flex flex-wrap gap-1.5 mb-1.5"></div>
+      <p class="text-2xs text-gray-600">Click to apply suggested mappings</p>
+    </div>
+
+    <!-- Search -->
+    <div class="px-4 py-2.5 border-b border-surface-800/60">
+      <div class="relative">
+        <svg class="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-gray-600" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
+        <input id="tableSearch" type="text" class="w-full rounded-lg border border-surface-700 bg-surface-900 pl-8 pr-3 py-[6px] text-xs text-gray-300 placeholder:text-gray-700 focus:border-accent-600 outline-none transition" placeholder="Search tables or columns..." oninput="renderTableList()">
+      </div>
+    </div>
+
+    <!-- Table list -->
+    <div id="tableList" class="flex-1 overflow-y-auto no-scrollbar"></div>
+  </aside>
+
+  <!-- ═══ MAIN CONTENT ═══ -->
+  <main class="flex-1 flex flex-col min-w-0 overflow-hidden">
+
+    <div id="mainContent" class="flex-1 overflow-y-auto custom-scroll">
+      <!-- Empty state -->
+      <div class="flex flex-col items-center justify-center h-full text-center px-6">
+        <div class="relative mb-6">
+          <div class="absolute inset-0 bg-accent-500/5 rounded-full blur-2xl scale-150"></div>
+          <svg class="relative h-16 w-16 text-surface-700" fill="none" stroke="currentColor" stroke-width=".75" viewBox="0 0 24 24">
+            <path stroke-linecap="round" d="M20.25 6.375c0 2.278-3.694 4.125-8.25 4.125S3.75 8.653 3.75 6.375m16.5 0c0-2.278-3.694-4.125-8.25-4.125S3.75 4.097 3.75 6.375m16.5 0v11.25c0 2.278-3.694 4.125-8.25 4.125s-8.25-1.847-8.25-4.125V6.375m16.5 0v3.75m-16.5-3.75v3.75m16.5 0v3.75C20.25 16.153 16.556 18 12 18s-8.25-1.847-8.25-4.125v-3.75m16.5 0c0 2.278-3.694 4.125-8.25 4.125s-8.25-1.847-8.25-4.125"/>
+          </svg>
+        </div>
+        <h2 class="text-lg font-medium text-gray-300 mb-1.5">Connect to a database</h2>
+        <p class="text-xs text-gray-600 mb-4 max-w-xs">Enter your PostgreSQL connection URL in the sidebar and introspect the schema to begin mapping columns.</p>
+        <button onclick="openHelp()" class="text-xs text-accent-400 hover:text-accent-300 transition font-medium">Read the guide</button>
+      </div>
+    </div>
+
+    <!-- ═══ BOTTOM BAR ═══ -->
+    <div id="bottomBar" class="hidden border-t border-surface-800/80 bg-surface-950/95 backdrop-blur-md">
+      <div class="flex items-center h-10 px-4 gap-0.5">
+        <button class="summary-tab h-full px-3 text-xs flex items-center gap-1.5 border-b-2 border-transparent transition-colors" data-panel="mapped" onclick="toggleSummary('mapped')">
+          <span class="h-2 w-2 rounded-full bg-accent-500"></span><span id="statMasked" class="font-mono">0</span> masked
+        </button>
+        <button class="summary-tab h-full px-3 text-xs flex items-center gap-1.5 border-b-2 border-transparent transition-colors" data-panel="nulled" onclick="toggleSummary('nulled')">
+          <span class="h-2 w-2 rounded-full bg-amber-500"></span><span id="statNulled" class="font-mono">0</span> nulled
+        </button>
+        <button class="summary-tab h-full px-3 text-xs flex items-center gap-1.5 border-b-2 border-transparent transition-colors" data-panel="kept" onclick="toggleSummary('kept')">
+          <span class="h-2 w-2 rounded-full bg-rose-400/70"></span><span id="statKept" class="font-mono">0</span> kept
+        </button>
+        <span class="flex-1"></span>
+        <button class="summary-tab h-full px-3 text-xs flex items-center gap-1.5 border-b-2 border-transparent text-gray-500 hover:text-gray-300 transition-colors" data-panel="preview" onclick="toggleSummary('preview')">
+          <svg class="h-3 w-3" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M17.25 6.75L22.5 12l-5.25 5.25m-10.5 0L1.5 12l5.25-5.25m7.5-3l-4.5 16.5"/></svg>
+          YAML
+        </button>
+        <button id="btnGenerate" disabled class="ml-2 h-7 rounded-lg bg-accent-600 hover:bg-accent-500 px-4 text-xs font-medium text-white disabled:opacity-30 disabled:cursor-not-allowed transition-colors" onclick="generateConfig()">Generate Config</button>
+      </div>
+      <div id="summaryPanel" class="hidden border-t border-surface-800/60 bg-surface-900/40"></div>
+    </div>
+  </main>
+</div>
+
+<!-- Toast -->
+<div id="toastContainer" class="fixed bottom-5 right-5 z-50 space-y-2" aria-live="polite"></div>
+
+<script>
+const TOKEN="{{TOKEN}}";
+const HEADERS={"Content-Type":"application/json","X-DBSLICE-Token":TOKEN};
+const state={tables:[],selectedTable:null,mappings:{},profiles:[],commonProviders:[],undoStack:[],openPanel:null};
+
+const PROVIDER_INFO={
+  email:"Fake email address",phone_number:"Phone number",first_name:"First name",
+  last_name:"Last name",name:"Full name",address:"Street address",
+  street_address:"Street only",city:"City name",zipcode:"ZIP code",
+  ssn:"SSN (###-##-####)",credit_card_number:"Credit card (Luhn-valid)",
+  ipv4:"IPv4 address",ipv6:"IPv6 address",company:"Company name",
+  url:"URL",date_of_birth:"Date of birth",user_name:"Username",
+  passport_number:"Passport number",iban:"IBAN",
+  pystr:"Random string",random_int:"Random integer",
+  year_only:"Year only (HIPAA)",hipaa_zip3:"Safe Harbor ZIP3 (HIPAA)",
+  age_bucket:"Age 90+ bucket (HIPAA)",redact_freetext:"Inline PII redaction",
+  credit_card_expire:"Card expiry",credit_card_security_code:"CVV",
+};
+
+document.getElementById("dbUrl").value="{{INITIAL_URL}}";
+
+async function api(path,body){
+  const r=await fetch(path,{method:"POST",headers:HEADERS,body:JSON.stringify(body)});
+  const d=await r.json();if(!r.ok) throw new Error(d.error||"Request failed");return d;
+}
+
+function openHelp(){document.getElementById("helpModal").classList.remove("hidden")}
+function closeHelp(){document.getElementById("helpModal").classList.add("hidden")}
+
+async function introspect(){
+  const btn=document.getElementById("btnIntrospect");
+  btn.disabled=true;btn.innerHTML='<span class="inline-block h-3 w-3 border-2 border-white/30 border-t-white rounded-full animate-spin mr-1.5"></span>Connecting...';
+  try{
+    const r=await api("/api/introspect",{database_url:document.getElementById("dbUrl").value,schema:document.getElementById("dbSchema").value||null,detect_sensitive:true});
+    state.tables=r.tables;state.profiles=r.compliance_profiles;state.commonProviders=r.common_providers;state.mappings={};state.undoStack=[];
+    for(const t of r.tables) for(const c of t.columns){
+      const k=t.name+"."+c.name;
+      if(c.suggested_action==="anonymize") state.mappings[k]={action:"anonymize",provider:c.suggested_provider};
+      else if(c.suggested_action==="null") state.mappings[k]={action:"null",provider:""};
+    }
+    document.getElementById("connBadge").classList.replace("hidden","flex");
+    document.getElementById("connLabel").textContent=r.database+" · "+r.table_count+" tables";
+    document.getElementById("bottomBar").classList.remove("hidden");
+    document.getElementById("btnGenerate").disabled=false;
+    renderProfileChips();renderTableList();
+    if(state.tables.length>0){state.selectedTable=state.tables[0].name;renderColumns();}
+    updateStats();
+    toast(r.table_count+" tables introspected","success");
+  }catch(e){toast(e.message,"error")}
+  finally{btn.disabled=false;btn.textContent="Introspect Schema"}
+}
+
+function renderProfileChips(){
+  document.getElementById("profileChips").innerHTML=state.profiles.map(p=>
+    `<button class="group rounded-lg border border-surface-700 px-2.5 py-1 text-2xs font-medium text-gray-400 hover:border-accent-600 hover:text-accent-400 transition-all data-[active]:bg-accent-900/50 data-[active]:border-accent-600 data-[active]:text-accent-400" data-profile="${p.name}" onclick="applyProfile('${p.name}',this)" aria-label="Apply ${p.display_name} profile">${p.display_name}</button>`
+  ).join("");
+}
+
+async function applyProfile(name,el){
+  try{
+    pushUndo();
+    const r=await api("/api/apply-profile",{profile:name,current_mappings:state.mappings});
+    for(const[f,p] of Object.entries(r.field_additions)) if(!state.mappings[f]) state.mappings[f]={action:"anonymize",provider:p};
+    for(const f of r.null_additions) if(!state.mappings[f]) state.mappings[f]={action:"null",provider:""};
+    el.toggleAttribute("data-active");
+    renderColumns();renderTableList();updateStats();refreshOpenPanel();
+    toast(`${r.display_name}: +${Object.keys(r.field_additions).length} masked, +${r.null_additions.length} nulled`,"success");
+  }catch(e){toast(e.message,"error")}
+}
+
+function renderTableList(){
+  const q=document.getElementById("tableSearch").value.toLowerCase();
+  const el=document.getElementById("tableList");
+  const filtered=state.tables.filter(t=>t.name.toLowerCase().includes(q)||t.columns.some(c=>c.name.toLowerCase().includes(q)));
+  el.innerHTML=filtered.map(t=>{
+    const total=t.columns.filter(c=>!c.is_pk&&!c.is_fk).length;
+    const mapped=t.columns.filter(c=>{const k=t.name+"."+c.name;const m=state.mappings[k];return m&&m.action!=="keep"}).length;
+    const pct=total>0?Math.round(mapped/total*100):100;
+    const active=state.selectedTable===t.name;
+    const barColor=pct===100?"bg-accent-500":pct>0?"bg-amber-500":"bg-surface-700";
+    return `<button class="group w-full flex items-center gap-2.5 px-4 py-2 text-left transition-colors ${active?"bg-surface-900":"hover:bg-surface-900/50"}" onclick="selectTable('${t.name}')" aria-label="${t.name}">
+      <div class="flex-1 min-w-0">
+        <span class="block text-xs font-medium ${active?"text-white":"text-gray-300 group-hover:text-white"} truncate transition-colors">${t.name}</span>
+        <div class="flex items-center gap-2 mt-1">
+          <div class="flex-1 h-[3px] rounded-full bg-surface-800 overflow-hidden"><div class="h-full ${barColor} rounded-full transition-all" style="width:${pct}%"></div></div>
+          <span class="text-2xs text-gray-600 font-mono tabular-nums">${mapped}/${total}</span>
+        </div>
+      </div>
+    </button>`;
+  }).join("");
+}
+
+function selectTable(name){
+  state.selectedTable=name;renderTableList();renderColumns();
+  document.getElementById("sidebar").classList.add("-translate-x-full");
+}
+
+function renderColumns(){
+  const table=state.tables.find(t=>t.name===state.selectedTable);
+  if(!table) return;
+  const main=document.getElementById("mainContent");
+
+  let h=`<div class="px-6 pt-5 pb-4">
+    <div class="flex items-center gap-3 mb-5 flex-wrap">
+      <h2 class="text-base font-semibold text-white">${table.name}</h2>
+      <span class="text-2xs text-gray-600 font-mono">${table.columns.length} columns</span>
+      <span class="flex-1"></span>
+      <div class="flex gap-1.5">
+        <button class="h-6 px-2 rounded-md text-2xs border border-surface-700 text-gray-500 hover:text-accent-400 hover:border-accent-700 transition-all" onclick="bulkAction('${table.name}','anonymize')">Anonymize all</button>
+        <button class="h-6 px-2 rounded-md text-2xs border border-surface-700 text-gray-500 hover:text-amber-400 hover:border-amber-800 transition-all" onclick="bulkAction('${table.name}','null')">NULL all</button>
+        <button class="h-6 px-2 rounded-md text-2xs border border-surface-700 text-gray-500 hover:text-gray-300 transition-all" onclick="bulkAction('${table.name}','keep')">Reset</button>
+      </div>
+    </div>`;
+
+  // Responsive: table on desktop, cards on mobile
+  h+=`<div class="hidden sm:grid grid-cols-[minmax(130px,1.2fr)_90px_130px_1fr] gap-x-3 px-3 pb-2 text-2xs font-semibold uppercase tracking-[.06em] text-gray-600">
+    <div>Column</div><div>Type</div><div>Action</div><div>Provider</div>
+  </div>`;
+
+  for(let idx=0;idx<table.columns.length;idx++){
+    const c=table.columns[idx];
+    const k=table.name+"."+c.name;
+    const m=state.mappings[k]||{action:"keep",provider:""};
+    const locked=c.is_pk||c.is_fk;
+    const lockLabel=c.is_pk?"PK":"FK";
+
+    const leftBorder=m.action==="anonymize"?"border-l-accent-500":m.action==="null"?"border-l-amber-500":"border-l-transparent";
+    const bg=m.action==="anonymize"?"bg-accent-500/[.03]":m.action==="null"?"bg-amber-500/[.03]":"";
+
+    // Desktop row
+    h+=`<div class="hidden sm:grid grid-cols-[minmax(130px,1.2fr)_90px_130px_1fr] gap-x-3 items-center px-3 py-2 border-b border-surface-800/30 border-l-2 ${leftBorder} ${bg} ${locked?"opacity-35":"row-glow"} animate-enter" style="animation-delay:${Math.min(idx*15,300)}ms" role="row">`;
+    h+=`<div class="font-mono text-xs ${locked?"text-gray-500":"text-gray-300"} truncate" title="${c.name}">${c.name}${locked?` <span class="text-2xs text-gray-600">${lockLabel}</span>`:""}</div>`;
+    h+=`<div class="text-2xs text-gray-600 truncate font-mono" title="${c.data_type}${c.nullable?"":" NOT NULL"}">${c.data_type}${c.nullable?"":'<span class="text-amber-600 ml-0.5">!</span>'}</div>`;
+
+    if(locked){
+      h+=`<div class="text-2xs text-gray-600">${c.is_pk?"Primary Key":"Foreign Key"}</div><div></div>`;
+    } else {
+      const sel=v=>m.action===v?"selected":"";
+      h+=`<div><select onchange="setAction('${k}',this.value)" class="w-full h-7 rounded-md border border-surface-700 bg-surface-900 pl-2 text-xs text-gray-300 focus:border-accent-600 outline-none cursor-pointer transition" aria-label="Action for ${c.name}">
+        <option value="keep" ${sel("keep")}>Keep</option>
+        <option value="anonymize" ${sel("anonymize")}>Anonymize</option>
+        <option value="null" ${sel("null")}>NULL</option>
+      </select></div>`;
+
+      if(m.action==="anonymize"){
+        h+=`<div><select onchange="setProvider('${k}',this.value)" class="w-full h-7 rounded-md border border-surface-700 bg-surface-900 pl-2 text-xs font-mono text-gray-300 focus:border-accent-600 outline-none cursor-pointer transition" aria-label="Provider for ${c.name}">`;
+        for(const p of state.commonProviders){
+          h+=`<option value="${p}" ${m.provider===p?"selected":""}>${p} — ${PROVIDER_INFO[p]||p}</option>`;
+        }
+        if(m.provider&&!state.commonProviders.includes(m.provider)){
+          h+=`<option value="${m.provider}" selected>${m.provider} (custom)</option>`;
+        }
+        h+=`</select></div>`;
+      } else {
+        h+=`<div></div>`;
+      }
+    }
+    h+=`</div>`;
+
+    // Mobile card
+    h+=`<div class="sm:hidden border-b border-surface-800/30 border-l-2 ${leftBorder} ${bg} px-3 py-3 ${locked?"opacity-35":""}">`;
+    h+=`<div class="flex items-center justify-between mb-2"><span class="font-mono text-xs text-gray-300">${c.name}</span><span class="text-2xs text-gray-600 font-mono">${c.data_type}${locked?" · "+lockLabel:""}</span></div>`;
+    if(!locked){
+      const sel=v=>m.action===v?"selected":"";
+      h+=`<div class="flex gap-2"><select onchange="setAction('${k}',this.value)" class="flex-1 h-8 rounded-md border border-surface-700 bg-surface-900 pl-2 text-xs text-gray-300 focus:border-accent-600 outline-none" aria-label="Action">
+        <option value="keep" ${sel("keep")}>Keep</option><option value="anonymize" ${sel("anonymize")}>Anonymize</option><option value="null" ${sel("null")}>NULL</option>
+      </select>`;
+      if(m.action==="anonymize"){
+        h+=`<select onchange="setProvider('${k}',this.value)" class="flex-1 h-8 rounded-md border border-surface-700 bg-surface-900 pl-2 text-xs font-mono text-gray-300 focus:border-accent-600 outline-none" aria-label="Provider">`;
+        for(const p of state.commonProviders) h+=`<option value="${p}" ${m.provider===p?"selected":""}>${p}</option>`;
+        h+=`</select>`;
+      }
+      h+=`</div>`;
+    }
+    h+=`</div>`;
+  }
+
+  h+=`</div>`;
+  main.innerHTML=h;
+}
+
+function setAction(k,action){
+  pushUndo();
+  if(action==="keep") delete state.mappings[k];
+  else if(action==="anonymize") state.mappings[k]={action:"anonymize",provider:state.mappings[k]?.provider||"pystr"};
+  else state.mappings[k]={action:"null",provider:""};
+  renderColumns();updateStats();renderTableList();refreshOpenPanel();
+}
+
+function setProvider(k,provider){if(state.mappings[k]) state.mappings[k].provider=provider;refreshOpenPanel();}
+
+function bulkAction(tn,action){
+  pushUndo();
+  const table=state.tables.find(t=>t.name===tn);if(!table) return;
+  for(const c of table.columns){
+    if(c.is_pk||c.is_fk) continue;
+    const k=tn+"."+c.name;
+    if(action==="keep") delete state.mappings[k];
+    else if(action==="anonymize") state.mappings[k]={action:"anonymize",provider:state.mappings[k]?.provider||"pystr"};
+    else state.mappings[k]={action:"null",provider:""};
+  }
+  renderColumns();updateStats();renderTableList();refreshOpenPanel();
+}
+
+function pushUndo(){state.undoStack.push(JSON.stringify(state.mappings));if(state.undoStack.length>50)state.undoStack.shift()}
+document.addEventListener("keydown",e=>{
+  if(e.key==="Escape") closeHelp();
+  if((e.metaKey||e.ctrlKey)&&e.key==="z"){
+    e.preventDefault();
+    if(state.undoStack.length>0){state.mappings=JSON.parse(state.undoStack.pop());renderColumns();updateStats();renderTableList();refreshOpenPanel();toast("Undone","success")}
+  }
+});
+
+function updateStats(){
+  let masked=0,nulled=0,kept=0;
+  for(const t of state.tables) for(const c of t.columns){
+    if(c.is_pk||c.is_fk) continue;
+    const k=t.name+"."+c.name,m=state.mappings[k];
+    if(m&&m.action==="anonymize") masked++;else if(m&&m.action==="null") nulled++;else kept++;
+  }
+  document.getElementById("statMasked").textContent=masked;
+  document.getElementById("statNulled").textContent=nulled;
+  document.getElementById("statKept").textContent=kept;
+}
+
+function toggleSummary(panel){
+  const sp=document.getElementById("summaryPanel");
+  if(state.openPanel===panel){state.openPanel=null;sp.classList.add("hidden");highlightTabs(null);return}
+  state.openPanel=panel;showSummaryContent(panel);sp.classList.remove("hidden");highlightTabs(panel);
+}
+
+function refreshOpenPanel(){if(state.openPanel) showSummaryContent(state.openPanel)}
+
+function highlightTabs(active){
+  document.querySelectorAll(".summary-tab").forEach(t=>{
+    const a=t.dataset.panel===active;
+    t.classList.toggle("border-accent-500",a);t.classList.toggle("text-white",a);
+    t.classList.toggle("border-transparent",!a);
+  });
+}
+
+function showSummaryContent(panel){
+  const el=document.getElementById("summaryPanel");
+
+  if(panel==="preview"){
+    const yaml=buildYaml();
+    el.innerHTML=`<div class="p-4 max-h-64 overflow-y-auto custom-scroll"><pre class="text-xs font-mono leading-relaxed">${highlightYaml(yaml)}</pre></div>`;
+    return;
+  }
+
+  const items=[];
+  for(const t of state.tables) for(const c of t.columns){
+    if(c.is_pk||c.is_fk) continue;
+    const k=t.name+"."+c.name,m=state.mappings[k],act=m?.action||"keep";
+    if(panel==="mapped"&&act==="anonymize") items.push({table:t.name,col:c.name,detail:m.provider});
+    else if(panel==="nulled"&&act==="null") items.push({table:t.name,col:c.name,detail:"NULL"});
+    else if(panel==="kept"&&act==="keep") items.push({table:t.name,col:c.name,detail:""});
+  }
+
+  if(!items.length){el.innerHTML=`<p class="text-gray-600 text-xs p-4">No columns in this category</p>`;return}
+
+  const groups={};
+  for(const i of items)(groups[i.table]=groups[i.table]||[]).push(i);
+
+  const colorMap={mapped:"accent",nulled:"amber",kept:"gray"};
+  const c=colorMap[panel]||"gray";
+
+  let h=`<div class="max-h-64 overflow-y-auto custom-scroll"><table class="w-full text-xs">`;
+  for(const[tbl,cols] of Object.entries(groups).sort(([a],[b])=>a.localeCompare(b))){
+    h+=`<tr><td colspan="3" class="pt-3 pb-1 px-4 text-2xs font-semibold text-gray-500 uppercase tracking-wide">${tbl}</td></tr>`;
+    for(const col of cols){
+      h+=`<tr class="hover:bg-surface-800/30 cursor-pointer" onclick="selectTable('${tbl}')">
+        <td class="py-1 pl-6 pr-2 font-mono text-${c}-400">${col.col}</td>
+        <td class="py-1 pr-4 text-gray-600 text-right">${col.detail}</td>
+      </tr>`;
+    }
+  }
+  h+=`</table></div>`;
+  el.innerHTML=h;
+}
+
+function buildYaml(){
+  const fields={},nulls=[];
+  for(const[k,v] of Object.entries(state.mappings)){
+    if(v.action==="anonymize") fields[k]=v.provider;
+    else if(v.action==="null") nulls.push(k);
+  }
+  let y="anonymization:\n  enabled: true\n";
+  if(Object.keys(fields).length){y+="  fields:\n";for(const[k,v] of Object.entries(fields).sort()) y+=`    ${k}: ${v}\n`}
+  if(nulls.length){y+="  security_null_fields:\n";for(const n of nulls.sort()) y+=`    - ${n}\n`}
+  return y;
+}
+
+function highlightYaml(yaml){
+  return yaml
+    .replace(/^(\s*#.*)$/gm,'<span class="yc">$1</span>')
+    .replace(/^(\s*[\w._]+)(:)/gm,'<span class="yk">$1</span><span class="text-gray-600">$2</span>')
+    .replace(/: (.+)$/gm,': <span class="yv">$1</span>')
+    .replace(/^(\s*- )(.+)$/gm,'$1<span class="yd">$2</span>');
+}
+
+async function generateConfig(){
+  try{
+    const r=await api("/api/generate-config",{mappings:state.mappings});
+    const main=document.getElementById("mainContent");
+    main.innerHTML=`<div class="max-w-2xl mx-auto px-6 py-8 animate-enter">
+      <div class="flex items-center gap-3 mb-6">
+        <div class="h-9 w-9 rounded-xl bg-accent-900/50 border border-accent-700/30 flex items-center justify-center">
+          <svg class="h-4 w-4 text-accent-400" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+        </div>
+        <div>
+          <h2 class="text-base font-semibold text-white">Configuration Ready</h2>
+          <p class="text-2xs text-gray-500">${r.field_count} fields masked &middot; ${r.null_count} fields nulled</p>
+        </div>
+      </div>
+
+      <div class="rounded-xl border border-surface-700 bg-surface-900 overflow-hidden">
+        <div class="flex items-center justify-between px-4 py-2 border-b border-surface-800 bg-surface-850">
+          <span class="text-2xs font-mono text-gray-500">dbslice.yaml</span>
+          <button class="text-2xs text-accent-400 hover:text-accent-300 transition font-medium" onclick="navigator.clipboard.writeText(document.getElementById('yamlRaw').textContent);toast('Copied to clipboard','success')">Copy</button>
+        </div>
+        <pre class="p-4 text-xs font-mono leading-[1.7] overflow-x-auto custom-scroll">${highlightYaml(r.yaml)}</pre>
+        <pre id="yamlRaw" class="hidden">${r.yaml}</pre>
+      </div>
+
+      <div class="flex gap-2 mt-4">
+        <button class="h-8 rounded-lg bg-accent-600 hover:bg-accent-500 px-4 text-xs font-medium text-white transition-colors" onclick="downloadYaml()">Download dbslice.yaml</button>
+        <button class="h-8 rounded-lg border border-surface-700 px-4 text-xs text-gray-400 hover:text-gray-200 hover:bg-surface-900 transition-all" onclick="renderColumns()">Back to mapping</button>
+      </div>
+
+      <div class="mt-8">
+        <h3 class="text-2xs font-semibold uppercase tracking-[.06em] text-gray-600 mb-2">Next step</h3>
+        <div class="rounded-xl bg-surface-900 border border-surface-700 px-4 py-3 font-mono text-xs text-accent-400 select-all leading-relaxed">${r.command_template}</div>
+      </div>
+    </div>`;
+    toast("Config generated","success");
+  }catch(e){toast(e.message,"error")}
+}
+
+function downloadYaml(){
+  const raw=document.getElementById("yamlRaw").textContent;
+  const a=document.createElement("a");
+  a.href=URL.createObjectURL(new Blob([raw],{type:"text/yaml"}));
+  a.download="dbslice.yaml";a.click();
+}
+
+function toast(msg,type){
+  const el=document.createElement("div");
+  const isOk=type==="success";
+  el.className=`flex items-center gap-2 rounded-xl px-4 py-2.5 text-xs font-medium shadow-xl shadow-black/20 animate-enter border ${isOk?"bg-accent-900/90 text-accent-300 border-accent-700/40":"bg-rose-950/90 text-rose-300 border-rose-800/40"}`;
+  el.innerHTML=`<svg class="h-3.5 w-3.5 flex-shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">${isOk?'<path d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>':'<path d="M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z"/>'}</svg>${msg}`;
+  el.setAttribute("role","status");
+  document.getElementById("toastContainer").appendChild(el);
+  setTimeout(()=>{el.style.opacity="0";el.style.transition="opacity .2s";setTimeout(()=>el.remove(),200)},3000);
+}
+</script>
+</body>
+</html>
