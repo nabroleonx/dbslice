@@ -1,4 +1,5 @@
 import hashlib
+import secrets
 from fnmatch import fnmatchcase
 from typing import TYPE_CHECKING, Any
 
@@ -16,6 +17,7 @@ except ImportError:
     Faker = None  # type: ignore
 
 if TYPE_CHECKING:
+    from dbslice.compliance.manifest import ComplianceManifest
     from dbslice.models import SchemaGraph
 
 
@@ -126,13 +128,21 @@ class DeterministicAnonymizer:
     tables or rows. Uses Faker with deterministic seeding based on input values.
     """
 
-    def __init__(self, seed: str = DEFAULT_ANONYMIZATION_SEED, schema: "SchemaGraph | None" = None):
+    def __init__(
+        self,
+        seed: str = DEFAULT_ANONYMIZATION_SEED,
+        schema: "SchemaGraph | None" = None,
+        deterministic: bool = True,
+        manifest: "ComplianceManifest | None" = None,
+    ):
         """
         Initialize the anonymizer with a global seed.
 
         Args:
             seed: Global seed for deterministic anonymization
             schema: Optional schema graph for FK detection (prevents anonymizing FK columns)
+            deterministic: If False, use random seeds per value (stronger privacy, no cross-table consistency)
+            manifest: Optional compliance manifest to record anonymization actions
 
         Raises:
             ImportError: If Faker is not installed
@@ -142,16 +152,21 @@ class DeterministicAnonymizer:
                 "Faker is required for anonymization. Install it with: pip install faker"
             )
 
-        logger.info("Initializing anonymizer", seed=seed[:20] + "...")  # Truncate seed in logs
+        mode = "deterministic" if deterministic else "non-deterministic"
+        logger.info("Initializing anonymizer", seed=seed[:20] + "...", mode=mode)
         self.global_seed = seed
+        self.deterministic = deterministic
         self.fake = Faker()
         self._cache: dict[tuple, Any] = {}
         self.redact_fields: set[str] = set()  # Set of normalized "table.column"
         self.field_providers: dict[str, str] = {}
         self.custom_patterns: list[tuple[str, str]] = []
+        self.fallback_patterns: list[tuple[str, str]] = []
         self.security_null_fields: list[str] = []
         self.schema = schema
         self._fk_columns_cache: dict[str, set[str]] = {}  # Cache of FK columns per table
+        self.manifest = manifest
+        self._manifest_recorded: set[tuple[str, str]] = set()  # Track which fields we've recorded
 
     def _normalize_field(self, table: str, column: str) -> str:
         """Return normalized table.column field name for matching."""
@@ -161,9 +176,11 @@ class DeterministicAnonymizer:
         """Case-insensitive shell-style glob match for table.column patterns."""
         return fnmatchcase(field, pattern.lower())
 
-    def _resolve_custom_pattern_provider(self, table: str, column: str) -> str | None:
+    def _resolve_pattern_provider(
+        self, table: str, column: str, patterns: list[tuple[str, str]]
+    ) -> str | None:
         """
-        Resolve provider from custom wildcard patterns.
+        Resolve provider from wildcard patterns.
 
         Resolution policy:
         - Most specific pattern wins (longest non-wildcard literal).
@@ -173,7 +190,7 @@ class DeterministicAnonymizer:
         best_provider: str | None = None
         best_specificity = -1
 
-        for pattern, provider in self.custom_patterns:
+        for pattern, provider in patterns:
             if not self._match_glob(pattern, field):
                 continue
 
@@ -184,6 +201,14 @@ class DeterministicAnonymizer:
 
         return best_provider
 
+    def _resolve_custom_pattern_provider(self, table: str, column: str) -> str | None:
+        """Resolve provider from user-defined wildcard patterns."""
+        return self._resolve_pattern_provider(table, column, self.custom_patterns)
+
+    def _resolve_fallback_pattern_provider(self, table: str, column: str) -> str | None:
+        """Resolve provider from fallback wildcard patterns (e.g., compliance profiles)."""
+        return self._resolve_pattern_provider(table, column, self.fallback_patterns)
+
     def _resolve_exact_field_provider(self, table: str, column: str) -> str | None:
         """Resolve provider from exact field mappings."""
         return self.field_providers.get(self._normalize_field(table, column))
@@ -192,9 +217,10 @@ class DeterministicAnonymizer:
         """
         Resolve faker method with precedence:
         1. Exact field provider mapping
-        2. Custom wildcard pattern mapping
-        3. Built-in column substring mapping
-        4. pystr fallback
+        2. User wildcard pattern mapping
+        3. Fallback wildcard pattern mapping
+        4. Built-in column substring mapping
+        5. pystr fallback
         """
         exact_provider = self._resolve_exact_field_provider(table, column)
         if exact_provider:
@@ -204,6 +230,10 @@ class DeterministicAnonymizer:
         if pattern_provider:
             return pattern_provider
 
+        fallback_pattern_provider = self._resolve_fallback_pattern_provider(table, column)
+        if fallback_pattern_provider:
+            return fallback_pattern_provider
+
         return self.get_faker_method(column)
 
     def configure(
@@ -211,6 +241,7 @@ class DeterministicAnonymizer:
         redact_fields: list[str],
         field_providers: dict[str, str] | None = None,
         patterns: dict[str, str] | None = None,
+        fallback_patterns: dict[str, str] | None = None,
         security_null_fields: list[str] | None = None,
     ):
         """
@@ -219,7 +250,8 @@ class DeterministicAnonymizer:
         Args:
             redact_fields: List of exact fields in "table.column" format.
             field_providers: Exact field to faker-provider mappings.
-            patterns: Wildcard table.column glob to faker-provider mappings.
+            patterns: User wildcard table.column glob to faker-provider mappings.
+            fallback_patterns: Lower-priority wildcard mappings (e.g., compliance profiles).
             security_null_fields: Wildcard table.column globs to force NULL.
         """
         self.redact_fields = {field.lower() for field in redact_fields}
@@ -229,13 +261,17 @@ class DeterministicAnonymizer:
         self.custom_patterns = [
             (pattern.lower(), provider) for pattern, provider in (patterns or {}).items()
         ]
+        self.fallback_patterns = [
+            (pattern.lower(), provider) for pattern, provider in (fallback_patterns or {}).items()
+        ]
         self.security_null_fields = [pattern.lower() for pattern in (security_null_fields or [])]
 
         logger.info(
             "Anonymizer configured",
             redact_field_count=len(self.redact_fields),
             exact_provider_count=len(self.field_providers),
-            pattern_count=len(self.custom_patterns),
+            user_pattern_count=len(self.custom_patterns),
+            fallback_pattern_count=len(self.fallback_patterns),
             security_null_pattern_count=len(self.security_null_fields),
         )
 
@@ -295,6 +331,10 @@ class DeterministicAnonymizer:
 
         # Custom wildcard patterns
         if self._resolve_custom_pattern_provider(table, column):
+            return True
+
+        # Fallback wildcard patterns (e.g., compliance profiles)
+        if self._resolve_fallback_pattern_provider(table, column):
             return True
 
         # Pattern matching on column name
@@ -380,34 +420,53 @@ class DeterministicAnonymizer:
 
         # FK integrity has highest priority over nulling/anonymization rules.
         if self._is_foreign_key_column(table, column):
+            self._record_manifest_fk(table, column)
             return value
 
         if self.should_null(table, column):
+            self._record_manifest_null(table, column)
             return None
 
         if not self.should_anonymize(table, column):
+            self._record_manifest_unmasked(table, column)
             return value
 
         faker_method = self._resolve_faker_method(table, column)
-        cache_key = (str(value), column, faker_method)
-        if cache_key in self._cache:
-            return self._cache[cache_key]
+        self._record_manifest_masked(table, column, faker_method)
 
-        # Generate deterministic seed from global seed + column/provider + original value
-        # Including column name ensures same value in different column types gets different output
-        hash_input = f"{self.global_seed}:{column}:{faker_method}:{value}".encode()
-        seed_int = int.from_bytes(hashlib.sha256(hash_input).digest()[:8], "big")
+        # Check for custom compliance transformers first (these take the value as input)
+        custom_fn = self._get_custom_transformer(faker_method)
+        if custom_fn is not None:
+            return custom_fn(value)
 
-        self.fake.seed_instance(seed_int)
+        if self.deterministic:
+            cache_key = (str(value), column, faker_method)
+            if cache_key in self._cache:
+                return self._cache[cache_key]
 
-        try:
-            anonymized = getattr(self.fake, faker_method)()
-        except (AttributeError, TypeError):
-            # Fallback if Faker method doesn't exist or fails
-            anonymized = self.fake.pystr()
+            # Generate deterministic seed from global seed + column/provider + original value
+            # Including column name ensures same value in different column types gets different output
+            hash_input = f"{self.global_seed}:{column}:{faker_method}:{value}".encode()
+            seed_int = int.from_bytes(hashlib.sha256(hash_input).digest()[:8], "big")
+            self.fake.seed_instance(seed_int)
 
-        self._cache[cache_key] = anonymized
-        return anonymized
+            try:
+                anonymized = getattr(self.fake, faker_method)()
+            except (AttributeError, TypeError):
+                anonymized = self.fake.pystr()
+
+            self._cache[cache_key] = anonymized
+            return anonymized
+        else:
+            seed_int = int.from_bytes(secrets.token_bytes(8), "big")
+            self.fake.seed_instance(seed_int)
+
+            try:
+                anonymized = getattr(self.fake, faker_method)()
+            except (AttributeError, TypeError):
+                anonymized = self.fake.pystr()
+
+            return anonymized
 
     def anonymize_row(self, table: str, row: dict[str, Any]) -> dict[str, Any]:
         """
@@ -451,5 +510,49 @@ class DeterministicAnonymizer:
             "redact_fields_count": len(self.redact_fields),
             "exact_provider_count": len(self.field_providers),
             "pattern_count": len(self.custom_patterns),
+            "fallback_pattern_count": len(self.fallback_patterns),
             "security_null_pattern_count": len(self.security_null_fields),
         }
+
+    @staticmethod
+    def _get_custom_transformer(method_name: str) -> Any | None:
+        """Look up a custom compliance transformer function by name."""
+        from dbslice.compliance.transformers import CUSTOM_TRANSFORMERS
+
+        return CUSTOM_TRANSFORMERS.get(method_name)
+
+    def _record_manifest_masked(self, table: str, column: str, method: str) -> None:
+        """Record a masked field in the manifest (once per table.column)."""
+        if not self.manifest:
+            return
+        key = (table, column)
+        if key not in self._manifest_recorded:
+            self._manifest_recorded.add(key)
+            self.manifest.record_masked_field(table, column, method)
+
+    def _record_manifest_null(self, table: str, column: str) -> None:
+        """Record a NULLed field in the manifest (once per table.column)."""
+        if not self.manifest:
+            return
+        key = (table, column)
+        if key not in self._manifest_recorded:
+            self._manifest_recorded.add(key)
+            self.manifest.record_nulled_field(table, column, "security_null_pattern")
+
+    def _record_manifest_fk(self, table: str, column: str) -> None:
+        """Record a preserved FK field in the manifest (once per table.column)."""
+        if not self.manifest:
+            return
+        key = (table, column)
+        if key not in self._manifest_recorded:
+            self._manifest_recorded.add(key)
+            self.manifest.record_fk_preserved(table, column)
+
+    def _record_manifest_unmasked(self, table: str, column: str) -> None:
+        """Record an unmasked field in the manifest (once per table.column)."""
+        if not self.manifest:
+            return
+        key = (table, column)
+        if key not in self._manifest_recorded:
+            self._manifest_recorded.add(key)
+            self.manifest.record_unmasked_field(table, column)

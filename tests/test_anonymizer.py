@@ -240,6 +240,27 @@ class TestDeterministicAnonymizer:
 
         assert anon._resolve_faker_method("users", "user_id") == "name"
 
+    def test_fallback_patterns_apply_when_user_patterns_missing(self):
+        anon = DeterministicAnonymizer()
+        anon.configure(
+            [],
+            patterns={},
+            fallback_patterns={"*.admission_date*": "date"},
+        )
+
+        assert anon.should_anonymize("visits", "admission_date")
+        assert anon._resolve_faker_method("visits", "admission_date") == "date"
+
+    def test_user_patterns_override_fallback_patterns(self):
+        anon = DeterministicAnonymizer()
+        anon.configure(
+            [],
+            patterns={"*.*date*": "date_time"},
+            fallback_patterns={"*.admission_date*": "date"},
+        )
+
+        assert anon._resolve_faker_method("visits", "admission_date") == "date_time"
+
     def test_security_null_fields_applies(self):
         anon = DeterministicAnonymizer()
         anon.configure(

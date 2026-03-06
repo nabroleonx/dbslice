@@ -117,18 +117,52 @@ class ExtractionEngine:
         self.adapter: DatabaseAdapter | None = None
         self.schema: SchemaGraph | None = None
         self.progress_callback = progress_callback
+        self.manifest: Any = None  # ComplianceManifest or None
 
-        # Initialize anonymizer if needed (schema will be set after introspection)
+        if config.generate_manifest or config.compliance_profiles:
+            from dbslice.compliance.manifest import ComplianceManifest
+
+            self.manifest = ComplianceManifest()
+            import uuid
+
+            self.manifest.initialize(
+                extraction_id=str(uuid.uuid4()),
+                compliance_profiles=config.compliance_profiles,
+                anonymization_seed=config.anonymization_seed,
+                deterministic=config.deterministic,
+            )
+
+        effective_field_providers = dict(config.anonymization_field_providers)
+        effective_patterns = dict(config.anonymization_patterns)
+        effective_profile_patterns: dict[str, str] = {}
+        effective_security_null = list(config.security_null_fields)
+        if config.compliance_profiles:
+            from dbslice.compliance.profiles import get_profile
+
+            for profile_name in config.compliance_profiles:
+                profile = get_profile(profile_name)
+                # Merge profile patterns as wildcard fallback rules (lower priority than user rules).
+                for pattern, method in profile.required_column_patterns.items():
+                    effective_profile_patterns.setdefault(f"*.{pattern}*", method)
+                for null_pattern in profile.required_null_patterns:
+                    glob = f"*.{null_pattern}*"
+                    if glob not in effective_security_null:
+                        effective_security_null.append(glob)
+
         self.anonymizer: DeterministicAnonymizer | None = None
-        if config.anonymize or config.redact_fields:
+        needs_anonymize = config.anonymize or config.redact_fields or config.compliance_profiles
+        if needs_anonymize:
             self.anonymizer = DeterministicAnonymizer(
-                seed=config.anonymization_seed or DEFAULT_ANONYMIZATION_SEED
+                seed=config.anonymization_seed or DEFAULT_ANONYMIZATION_SEED,
+                deterministic=config.deterministic,
+                manifest=self.manifest,
             )
             self.anonymizer.configure(
                 config.redact_fields,
-                field_providers=config.anonymization_field_providers,
-                patterns=config.anonymization_patterns,
-                security_null_fields=config.security_null_fields,
+                field_providers=effective_field_providers,
+                patterns=effective_patterns,
+                fallback_patterns=effective_profile_patterns,
+                security_null_fields=effective_security_null,
             )
 
     def _log(self, stage: str, message: str, current: int = 0, total: int = 0) -> None:
@@ -371,7 +405,6 @@ class ExtractionEngine:
         logger.info("Starting data fetch phase", table_count=len(all_records))
 
         tables_data: dict[str, list[dict[str, Any]]] = {}
-        stats: dict[str, int] = {}
 
         total_tables = len(all_records)
         for i, (table, pk_values) in enumerate(all_records.items()):
@@ -392,28 +425,46 @@ class ExtractionEngine:
             ):
                 rows = list(self.adapter.fetch_by_pk(table, pk_columns, pk_values))
 
-            # Anonymize if enabled
-            if self.anonymizer:
-                with logger.timed_operation("anonymize_table_data", table=table):
-                    rows = self._anonymize_table_data(table, rows)
-                logger.debug("Table data anonymized", table=table, row_count=len(rows))
-
             tables_data[table] = rows
-            stats[table] = len(rows)
             logger.debug("Table data fetched", table=table, row_count=len(rows))
 
         if self._has_row_limits():
             self._log("limits", "Applying deterministic row limits with integrity closure...")
             with logger.timed_operation("apply_row_limits"):
                 tables_data = self._apply_row_limits(tables_data)
-            stats = {table: len(rows) for table, rows in tables_data.items()}
             logger.info(
                 "Row limits applied",
                 global_limit=self.config.row_limit_global,
                 per_table_limits=len(self.config.row_limit_per_table),
-                total_rows=sum(stats.values()),
+                total_rows=sum(len(rows) for rows in tables_data.values()),
             )
             self._log("limits", "Row limits applied")
+
+        scan_pre_mask_data: dict[str, list[dict[str, Any]]] | None = None
+        if self.config.compliance_profiles and self.anonymizer:
+            # Pre-mask snapshot used for coverage scan decisions.
+            scan_pre_mask_data = {
+                table: [dict(row) for row in rows] for table, rows in tables_data.items()
+            }
+
+        if self.anonymizer:
+            self._log("anonymize", "Applying anonymization rules...")
+            total_tables = len(tables_data)
+            for i, table in enumerate(sorted(tables_data.keys())):
+                rows = tables_data[table]
+                if not rows:
+                    continue
+                self._log(
+                    "anonymize",
+                    f"Anonymizing {len(rows)} rows in {table}",
+                    i + 1,
+                    total_tables,
+                )
+                with logger.timed_operation("anonymize_table_data", table=table):
+                    tables_data[table] = self._anonymize_table_data(table, rows)
+                logger.debug("Table data anonymized", table=table, row_count=len(rows))
+
+        stats: dict[str, int] = {table: len(rows) for table, rows in tables_data.items()}
 
         deferred_updates = []
         if broken_fks:
@@ -472,6 +523,19 @@ class ExtractionEngine:
                     )
                     raise ExtractionError(error_msg)
 
+        if self.config.compliance_profiles and self.schema:
+            self._apply_freetext_and_binary_handling(tables_data)
+
+        if self.config.compliance_profiles and self.anonymizer and scan_pre_mask_data is not None:
+            self._run_pii_scan(scan_pre_mask_data, tables_data)
+
+        if self.config.k_anonymity_min_k is not None:
+            self._check_k_anonymity(tables_data)
+
+        if self.manifest:
+            for table, rows in tables_data.items():
+                self.manifest.set_table_row_count(table, len(rows))
+
         return ExtractionResult(
             tables=tables_data,
             insert_order=insert_order,
@@ -503,6 +567,276 @@ class ExtractionEngine:
             return rows
 
         return [self.anonymizer.anonymize_row(table, row) for row in rows]
+
+    def _run_pii_scan(
+        self,
+        pre_mask_data: dict[str, list[dict[str, Any]]],
+        post_mask_data: dict[str, list[dict[str, Any]]],
+    ) -> None:
+        """
+        Run two-phase compliance value scanning.
+
+        1) Coverage scan (pre-mask): identify where PII exists in extracted values.
+        2) Residual scan (post-mask): re-scan only columns not expected to be protected.
+        """
+        from dbslice.compliance.profiles import get_profile
+        from dbslice.compliance.scanner import PIIScanner
+
+        assert self.anonymizer is not None
+
+        # Collect all scan patterns from active profiles
+        scan_patterns: set[str] = set()
+        freetext_patterns: set[str] = set()
+        for profile_name in self.config.compliance_profiles:
+            profile = get_profile(profile_name)
+            scan_patterns.update(profile.value_scan_patterns)
+            freetext_patterns.update(profile.warn_freetext_columns)
+
+        if not scan_patterns:
+            return
+
+        scanner = PIIScanner(patterns=sorted(scan_patterns))
+        self._log("compliance", "Running compliance coverage scan...")
+
+        coverage_detections = []
+        for table, rows in pre_mask_data.items():
+            if not rows:
+                continue
+            sample = rows[:100]
+            detections = scanner.scan_rows(table, sample)
+            coverage_detections.extend(detections)
+
+            # Check for freetext columns that might contain embedded PII
+            if freetext_patterns:
+                for col in rows[0].keys():
+                    col_lower = col.lower()
+                    for pattern in freetext_patterns:
+                        if pattern in col_lower:
+                            if self.manifest:
+                                self.manifest.add_warning(
+                                    table, col,
+                                    f"Free-text column may contain embedded PII (matched pattern: {pattern})",
+                                )
+                            break
+
+        unprotected_columns: dict[str, set[str]] = {}
+        for detection in coverage_detections:
+            is_protected = self.anonymizer.should_anonymize(
+                detection.table, detection.column
+            ) or self.anonymizer.should_null(detection.table, detection.column)
+            if not is_protected:
+                unprotected_columns.setdefault(detection.table, set()).add(detection.column)
+                if self.manifest:
+                    self.manifest.add_warning(
+                        detection.table,
+                        detection.column,
+                        "PII detected in coverage scan but field is not configured for masking",
+                    )
+
+        residual_detections = []
+        if unprotected_columns:
+            self._log("compliance", "Running compliance residual scan...")
+            for table, rows in post_mask_data.items():
+                if not rows:
+                    continue
+                columns_to_scan = unprotected_columns.get(table)
+                if not columns_to_scan:
+                    continue
+                sample = rows[:100]
+                skip_columns = {col for col in rows[0].keys() if col not in columns_to_scan}
+                detections = scanner.scan_rows(table, sample, skip_columns=skip_columns)
+                residual_detections.extend(detections)
+
+        if self.manifest:
+            self.manifest.add_pii_detections(residual_detections)
+
+        if residual_detections:
+            logger.warning(
+                "Residual PII detected in post-mask scan",
+                detection_count=len(residual_detections),
+                tables_affected=len({d.table for d in residual_detections}),
+            )
+            self._log(
+                "compliance",
+                f"Residual scan found {len(residual_detections)} unprotected PII detection(s)",
+            )
+
+            if self.config.compliance_strict:
+                detection_details = [
+                    f"  {d.table}.{d.column}: {d.pattern_name} ({d.match_count}/{d.sample_size} matches, {d.confidence} confidence)"
+                    for d in residual_detections
+                ]
+                raise ExtractionError(
+                    "Compliance strict mode: residual unprotected PII detected after masking.\n"
+                    + "\n".join(detection_details)
+                )
+        else:
+            if coverage_detections:
+                self._log(
+                    "compliance",
+                    "Coverage scan detected PII in source values; residual scan is clean",
+                )
+            else:
+                self._log("compliance", "Coverage scan clean: no PII detected in sampled values")
+
+    def _apply_freetext_and_binary_handling(
+        self, tables_data: dict[str, list[dict[str, Any]]]
+    ) -> None:
+        """Apply free-text redaction and binary column handling based on compliance config."""
+        assert self.schema is not None
+
+        from dbslice.compliance.profiles import get_profile
+        from dbslice.compliance.transformers import BINARY_SENTINEL, redact_freetext
+
+        freetext_action = self.config.freetext_action
+        binary_action = self.config.binary_action
+
+        # Collect freetext column patterns from active profiles
+        freetext_patterns: set[str] = set()
+        for profile_name in self.config.compliance_profiles:
+            profile = get_profile(profile_name)
+            freetext_patterns.update(profile.warn_freetext_columns)
+
+        # Binary-like PostgreSQL types
+        binary_types = {"bytea", "blob", "binary", "varbinary", "image", "lo"}
+
+        for table, rows in tables_data.items():
+            if not rows:
+                continue
+            table_info = self.schema.get_table(table)
+            if not table_info:
+                continue
+
+            for col_obj in table_info.columns:
+                col = col_obj.name
+                col_lower = col.lower()
+                col_type_lower = col_obj.data_type.lower()
+
+                # Binary column handling
+                if any(bt in col_type_lower for bt in binary_types):
+                    if binary_action == "null":
+                        for row in rows:
+                            if col in row:
+                                row[col] = None
+                    elif binary_action == "sentinel":
+                        for row in rows:
+                            if col in row and row[col] is not None:
+                                if col_obj.nullable:
+                                    row[col] = None
+                                else:
+                                    row[col] = BINARY_SENTINEL
+                    if self.manifest:
+                        self.manifest.add_warning(
+                            table, col,
+                            f"Binary column ({col_obj.data_type}) handled with action={binary_action}",
+                        )
+                    continue
+
+                # Free-text column handling
+                is_freetext = any(pat in col_lower for pat in freetext_patterns)
+                if not is_freetext:
+                    continue
+
+                # Skip columns already handled by anonymizer
+                if self.anonymizer and (
+                    self.anonymizer.should_anonymize(table, col)
+                    or self.anonymizer.should_null(table, col)
+                ):
+                    continue
+
+                if freetext_action == "null":
+                    for row in rows:
+                        if col in row:
+                            if col_obj.nullable:
+                                row[col] = None
+                            else:
+                                # NOT NULL: fall back to redact
+                                row[col] = redact_freetext(row[col])
+                elif freetext_action == "redact":
+                    for row in rows:
+                        if col in row and row[col] is not None:
+                            row[col] = redact_freetext(row[col])
+
+                if self.manifest and freetext_action != "warn":
+                    effective = freetext_action
+                    if freetext_action == "null" and not col_obj.nullable:
+                        effective = "redact (NOT NULL fallback)"
+                    self.manifest.add_warning(
+                        table, col,
+                        f"Free-text column handled with action={effective}",
+                    )
+
+    def _check_k_anonymity(self, tables_data: dict[str, list[dict[str, Any]]]) -> None:
+        """
+        Post-extraction k-anonymity verification.
+
+        Checks that every combination of configured quasi-identifiers appears
+        at least k times in the output. Fail-only — does not modify data.
+        """
+        min_k = self.config.k_anonymity_min_k
+        qi_specs = self.config.k_anonymity_quasi_identifiers
+        action = self.config.k_anonymity_action
+
+        if not min_k or not qi_specs:
+            return
+
+        self._log("compliance", f"Running k-anonymity check (k={min_k})...")
+
+        # Parse quasi-identifier specs: "table.column" format
+        qi_by_table: dict[str, list[str]] = {}
+        for spec in qi_specs:
+            parts = spec.split(".", 1)
+            if len(parts) == 2:
+                qi_by_table.setdefault(parts[0].lower(), []).append(parts[1].lower())
+
+        violations: list[str] = []
+        for table, qi_columns in qi_by_table.items():
+            rows = tables_data.get(table, [])
+            if not rows:
+                continue
+
+            # Check which columns actually exist
+            available = {c.lower() for c in rows[0].keys()}
+            active_qi = [c for c in qi_columns if c in available]
+            if not active_qi:
+                continue
+
+            # Count combinations
+            from collections import Counter
+
+            combos = Counter(
+                tuple(str(row.get(c, "")) for c in active_qi)
+                for row in rows
+            )
+
+            for combo, count in combos.items():
+                if count < min_k:
+                    combo_str = ", ".join(f"{c}={v}" for c, v in zip(active_qi, combo))
+                    violations.append(f"{table}: [{combo_str}] appears {count} time(s)")
+
+        if not violations:
+            self._log("compliance", f"k-anonymity check passed (k={min_k})")
+            return
+
+        msg = f"k-anonymity violation: {len(violations)} combination(s) appear fewer than {min_k} times"
+        logger.warning(msg, violation_count=len(violations), min_k=min_k)
+
+        if self.manifest:
+            for v in violations[:50]:
+                self.manifest.add_warning("_k_anonymity", "quasi_identifiers", v)
+
+        detail_lines = [f"  {v}" for v in violations[:20]]
+        if len(violations) > 20:
+            detail_lines.append(f"  ... and {len(violations) - 20} more")
+
+        self._log("compliance", msg)
+
+        if action == "fail":
+            raise ExtractionError(
+                f"k-anonymity check failed (k={min_k}): "
+                f"{len(violations)} quasi-identifier combination(s) are unique or below threshold.\n"
+                + "\n".join(detail_lines)
+            )
 
     def _has_row_limits(self) -> bool:
         """Check whether any row-limit configuration is active."""

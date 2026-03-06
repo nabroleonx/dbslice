@@ -1,6 +1,10 @@
+import itertools
+import json
 import os
+import re
 from pathlib import Path
 from typing import Annotated
+from urllib.parse import parse_qs, urlparse
 
 import typer
 from rich.console import Console
@@ -204,9 +208,7 @@ def _parse_and_validate_seeds(
     parsed_seeds = []
     for s in seeds:
         try:
-            parsed_seeds.append(
-                SeedSpec.parse(s, allow_unsafe_subqueries=allow_unsafe_subqueries)
-            )
+            parsed_seeds.append(SeedSpec.parse(s, allow_unsafe_subqueries=allow_unsafe_subqueries))
         except ValueError as e:
             raise InvalidSeedError(s, str(e))
 
@@ -348,11 +350,19 @@ def _show_extraction_settings(
         seed_desc = f"{s.table}.{s.column}={s.value}" if s.column else f"{s.table}:{s.where_clause}"
         console.print(f"    - {seed_desc}")
     if config.anonymize:
-        console.print("  [yellow]Anonymization: ENABLED[/yellow]")
+        mode = "deterministic" if config.deterministic else "non-deterministic"
+        console.print(f"  [yellow]Anonymization: ENABLED ({mode})[/yellow]")
         if config.redact_fields:
             console.print("  Additional redacted fields:")
             for field in config.redact_fields:
                 console.print(f"    - {field}")
+    if config.compliance_profiles:
+        profiles_str = ", ".join(p.upper() for p in config.compliance_profiles)
+        console.print(f"  [yellow]Compliance profiles: {profiles_str}[/yellow]")
+        if config.compliance_strict:
+            console.print("  [yellow]Strict mode: ENABLED (will fail on PII detection)[/yellow]")
+    if config.generate_manifest:
+        console.print("  [yellow]Audit manifest: ENABLED[/yellow]")
     console.print()
 
 
@@ -408,8 +418,12 @@ def _show_extraction_summary(
     if result.has_cycles:
         console.print()
         if result.used_deferred_cycle_strategy:
-            console.print("[yellow]⚠ Circular dependencies detected (deferred-constraint strategy)[/yellow]")
-            console.print("  Strategy: [cyan]Deterministic order + SET CONSTRAINTS ALL DEFERRED[/cyan]")
+            console.print(
+                "[yellow]⚠ Circular dependencies detected (deferred-constraint strategy)[/yellow]"
+            )
+            console.print(
+                "  Strategy: [cyan]Deterministic order + SET CONSTRAINTS ALL DEFERRED[/cyan]"
+            )
             console.print(f"  Cycles: [cyan]{len(result.cycle_infos)}[/cyan]")
         else:
             console.print("[yellow]⚠ Circular dependencies detected and resolved[/yellow]")
@@ -485,7 +499,7 @@ def _generate_and_output_sql(
     disable_fk_checks: bool,
     output_file_mode: int,
     db_schema: str | None = None,
-) -> None:
+) -> list[Path]:
     """
     Generate SQL output and write to file or stdout.
 
@@ -524,11 +538,13 @@ def _generate_and_output_sql(
             console.print(
                 f"[green]Wrote {result.total_rows()} rows to [bold]{out_file}[/bold][/green]"
             )
+        return [out_file.resolve()]
     else:
         if not no_progress:
             console.print()
             console.print("[dim]--- SQL Output ---[/dim]")
         stdout_console.print(sql_output)
+        return []
 
 
 def _generate_and_output_json(
@@ -541,7 +557,7 @@ def _generate_and_output_json(
     console: Console,
     stdout_console: Console,
     output_file_mode: int,
-) -> None:
+) -> list[Path]:
     """
     Generate JSON output and write to file(s) or stdout.
 
@@ -584,19 +600,23 @@ def _generate_and_output_json(
                 console.print(
                     f"[green]Wrote {result.total_rows()} rows to [bold]{out_file}[/bold][/green]"
                 )
+            return [out_file.resolve()]
         else:
             assert isinstance(json_output, dict)
             out_file.mkdir(parents=True, exist_ok=True)
+            written_files: list[Path] = []
             for table_name, table_json in json_output.items():
                 table_file = out_file / f"{table_name}.json"
                 write_text_file_secure(
                     table_file, table_json, file_mode=output_file_mode, encoding="utf-8"
                 )
+                written_files.append(table_file.resolve())
             if not no_progress:
                 console.print()
                 console.print(
                     f"[green]Wrote {result.table_count()} tables ({result.total_rows()} rows) to [bold]{out_file}[/bold][/green]"
                 )
+            return written_files
     else:
         # Output to stdout (only single mode makes sense)
         if mode == "per-table":
@@ -616,6 +636,7 @@ def _generate_and_output_json(
             console.print()
             console.print("[dim]--- JSON Output ---[/dim]")
         stdout_console.print(json_output)
+        return []
 
 
 def _generate_and_output_csv(
@@ -628,7 +649,7 @@ def _generate_and_output_csv(
     console: Console,
     stdout_console: Console,
     output_file_mode: int,
-) -> None:
+) -> list[Path]:
     """
     Generate CSV output and write to file(s) or stdout.
 
@@ -671,19 +692,23 @@ def _generate_and_output_csv(
                 console.print(
                     f"[green]Wrote {result.total_rows()} rows to [bold]{out_file}[/bold][/green]"
                 )
+            return [out_file.resolve()]
         else:
             assert isinstance(csv_output, dict)
             out_file.mkdir(parents=True, exist_ok=True)
+            written_files: list[Path] = []
             for table_name, table_csv in csv_output.items():
                 table_file = out_file / f"{table_name}.csv"
                 write_text_file_secure(
                     table_file, table_csv, file_mode=output_file_mode, encoding="utf-8"
                 )
+                written_files.append(table_file.resolve())
             if not no_progress:
                 console.print()
                 console.print(
                     f"[green]Wrote {result.table_count()} tables ({result.total_rows()} rows) to [bold]{out_file}[/bold][/green]"
                 )
+            return written_files
     else:
         # Output to stdout (only single mode makes sense)
         if mode == "per-table":
@@ -703,6 +728,7 @@ def _generate_and_output_csv(
             console.print()
             console.print("[dim]--- CSV Output ---[/dim]")
         stdout_console.print(csv_output)
+        return []
 
 
 def _handle_output_format(
@@ -720,7 +746,7 @@ def _handle_output_format(
     console: Console,
     stdout_console: Console,
     db_schema: str | None = None,
-) -> None:
+) -> list[Path]:
     """
     Handle output generation based on configured format.
 
@@ -743,7 +769,7 @@ def _handle_output_format(
         typer.Exit: If format is not yet implemented (exits with code 1)
     """
     if output_format == OutputFormat.SQL:
-        _generate_and_output_sql(
+        return _generate_and_output_sql(
             result,
             schema,
             database_url,
@@ -758,7 +784,7 @@ def _handle_output_format(
             db_schema=db_schema,
         )
     elif output_format == OutputFormat.JSON:
-        _generate_and_output_json(
+        return _generate_and_output_json(
             result,
             schema,
             out_file,
@@ -770,7 +796,7 @@ def _handle_output_format(
             output_file_mode=extract_config.output_file_mode,
         )
     elif output_format == OutputFormat.CSV:
-        _generate_and_output_csv(
+        return _generate_and_output_csv(
             result,
             schema,
             out_file,
@@ -781,6 +807,113 @@ def _handle_output_format(
             stdout_console,
             output_file_mode=extract_config.output_file_mode,
         )
+
+    return []
+
+
+def _is_truthy_env(value: str | None) -> bool:
+    """Interpret common truthy environment values."""
+    if value is None:
+        return False
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _enforce_source_guardrails(config: ExtractConfig) -> None:
+    """Apply source guardrail checks for compliance-sensitive runs."""
+    if config.compliance_require_ci and not _is_truthy_env(os.environ.get("CI")):
+        raise ValueError("Compliance policy requires CI environment, but CI is not set")
+
+    url = config.database_url
+    for pattern in config.compliance_denied_url_patterns:
+        if re.search(pattern, url):
+            raise ValueError(f"Database URL rejected by compliance deny pattern: {pattern}")
+
+    if config.compliance_allowed_url_patterns and not any(
+        re.search(pattern, url) for pattern in config.compliance_allowed_url_patterns
+    ):
+        raise ValueError("Database URL does not match any compliance allow pattern")
+
+    if config.compliance_required_sslmode:
+        parsed = urlparse(url)
+        query = parse_qs(parsed.query)
+        sslmode = query.get("sslmode", [None])[0]
+        if sslmode != config.compliance_required_sslmode:
+            raise ValueError(
+                "Database URL sslmode does not satisfy compliance requirement "
+                f"(expected '{config.compliance_required_sslmode}', got '{sslmode}')"
+            )
+
+
+def _enforce_compliance_policy(
+    config: ExtractConfig,
+    out_file: Path | None,
+    allow_raw: bool,
+    breakglass_reason: str | None,
+    ticket_id: str | None,
+) -> tuple[bool, str | None, str | None]:
+    """
+    Apply policy-mode gates for compliance runs.
+
+    Returns:
+        Tuple of (breakglass_applied, reason, ticket_id)
+    """
+    mode = config.compliance_policy_mode.lower()
+    policy_active = mode in {"standard", "strict"} and bool(config.compliance_profiles)
+
+    risky_reasons: list[str] = []
+    if policy_active:
+        if out_file is None:
+            risky_reasons.append("stdout output is blocked when compliance profiles are active")
+        if config.allow_unsafe_where:
+            risky_reasons.append("unsafe WHERE subqueries are blocked under compliance policy")
+        if not config.anonymize:
+            risky_reasons.append("masking/anonymization is required under compliance policy")
+
+    if allow_raw:
+        if not risky_reasons:
+            raise ValueError("--allow-raw was provided but no policy gate requires breakglass")
+        if not breakglass_reason:
+            raise ValueError("--allow-raw requires --breakglass-reason")
+        if not ticket_id:
+            raise ValueError("--allow-raw requires --ticket-id")
+        return True, breakglass_reason, ticket_id
+
+    if risky_reasons:
+        details = "\n".join(f"  - {reason}" for reason in risky_reasons)
+        raise ValueError(
+            "Compliance policy blocked extraction:\n"
+            f"{details}\n"
+            "Use --allow-raw with --breakglass-reason and --ticket-id only for approved exceptions."
+        )
+
+    if breakglass_reason or ticket_id:
+        raise ValueError("--breakglass-reason/--ticket-id require --allow-raw")
+
+    return False, None, None
+
+
+def _write_compliance_manifest(
+    manifest: object,
+    out_file: Path | None,
+    console: Console,
+    no_progress: bool,
+) -> None:
+    """Write compliance manifest to a JSON file alongside the output."""
+    from dbslice.compliance.manifest import ComplianceManifest
+    from dbslice.utils.fileio import write_text_file_secure
+
+    assert isinstance(manifest, ComplianceManifest)
+
+    if out_file:
+        manifest_path = out_file.with_suffix(".manifest.json")
+    else:
+        manifest_path = Path("dbslice_manifest.json")
+
+    manifest_json = manifest.to_json(pretty=True)
+    write_text_file_secure(manifest_path, manifest_json, file_mode=0o600)
+
+    if not no_progress:
+        console.print(f"[green]Wrote compliance manifest to [bold]{manifest_path}[/bold][/green]")
 
 
 @app.command()
@@ -986,6 +1119,58 @@ def extract(
             ),
         ),
     ] = None,
+    compliance: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--compliance",
+            help="Compliance profile(s) to apply: gdpr, hipaa, pci-dss",
+        ),
+    ] = None,
+    compliance_strict: Annotated[
+        bool | None,
+        typer.Option(
+            "--compliance-strict/--no-compliance-strict",
+            help="Fail extraction if uncovered PII is detected by value scanning",
+        ),
+    ] = None,
+    manifest: Annotated[
+        bool | None,
+        typer.Option(
+            "--manifest/--no-manifest",
+            help="Generate audit manifest alongside output (auto-enabled with --compliance)",
+        ),
+    ] = None,
+    non_deterministic: Annotated[
+        bool | None,
+        typer.Option(
+            "--non-deterministic/--deterministic",
+            help="Use non-deterministic anonymization (random output each run, stronger privacy)",
+        ),
+    ] = None,
+    allow_raw: Annotated[
+        bool,
+        typer.Option(
+            "--allow-raw",
+            help=(
+                "Breakglass override for compliance policy gates (requires "
+                "--breakglass-reason and --ticket-id)"
+            ),
+        ),
+    ] = False,
+    breakglass_reason: Annotated[
+        str | None,
+        typer.Option(
+            "--breakglass-reason",
+            help="Required breakglass justification when using --allow-raw",
+        ),
+    ] = None,
+    ticket_id: Annotated[
+        str | None,
+        typer.Option(
+            "--ticket-id",
+            help="Required tracking ticket/incident ID when using --allow-raw",
+        ),
+    ] = None,
 ):
     """
     Extract a database subset starting from seed record(s).
@@ -1037,15 +1222,11 @@ def extract(
 
             direction_override = direction
             if direction_override is None:
-                direction_override = _parse_env_choice(
-                    "DBSLICE_DIRECTION", {"up", "down", "both"}
-                )
+                direction_override = _parse_env_choice("DBSLICE_DIRECTION", {"up", "down", "both"})
 
             output_override = output
             if output_override is None:
-                output_override = _parse_env_choice(
-                    "DBSLICE_OUTPUT_FORMAT", {"sql", "json", "csv"}
-                )
+                output_override = _parse_env_choice("DBSLICE_OUTPUT_FORMAT", {"sql", "json", "csv"})
 
             anonymize_override = anonymize
             if anonymize_override is None:
@@ -1103,11 +1284,38 @@ def extract(
             allow_unsafe_where_override
             if allow_unsafe_where_override is not None
             else (
-                loaded_config.extraction.allow_unsafe_where
-                if loaded_config is not None
-                else False
+                loaded_config.extraction.allow_unsafe_where if loaded_config is not None else False
             )
         )
+
+        # Compliance settings
+        effective_compliance = compliance or []
+        effective_compliance_strict = compliance_strict if compliance_strict is not None else False
+        effective_manifest = manifest if manifest is not None else bool(effective_compliance)
+        effective_deterministic = not non_deterministic if non_deterministic is not None else True
+
+        if loaded_config:
+            if not compliance:
+                effective_compliance = loaded_config.compliance.profiles
+            if compliance_strict is None:
+                effective_compliance_strict = loaded_config.compliance.strict
+            if manifest is None:
+                effective_manifest = loaded_config.compliance.generate_manifest or bool(
+                    effective_compliance
+                )
+            if non_deterministic is None:
+                effective_deterministic = loaded_config.anonymization.deterministic
+
+        # Validate compliance profile names
+        if effective_compliance:
+            from dbslice.compliance.profiles import get_profile
+
+            for profile_name in effective_compliance:
+                try:
+                    get_profile(profile_name)
+                except ValueError as e:
+                    console.print(f"[red]Compliance Error:[/red] {e}")
+                    raise typer.Exit(1)
 
         resolved_database_url = database_url_override
         if not resolved_database_url and loaded_config:
@@ -1143,12 +1351,17 @@ def extract(
                 validate_exclude_tables(passthrough)  # Same validation as exclude
             if redact_override:
                 validate_redact_fields(redact_override)
-            if (
-                direction_override is not None
-                and direction_override.lower() not in {"up", "down", "both"}
-            ):
+            if direction_override is not None and direction_override.lower() not in {
+                "up",
+                "down",
+                "both",
+            }:
                 raise ValueError("Invalid direction. Use: up, down, both")
-            if output_override is not None and output_override.lower() not in {"sql", "json", "csv"}:
+            if output_override is not None and output_override.lower() not in {
+                "sql",
+                "json",
+                "csv",
+            }:
                 raise ValueError("Invalid output format. Use: sql, json, csv")
             if effective_json_mode not in ("auto", "single", "per-table"):
                 raise ValueError(
@@ -1184,9 +1397,7 @@ def extract(
                 else None
             )
             output_format_enum = (
-                OutputFormat(effective_output.lower())
-                if output_override is not None
-                else None
+                OutputFormat(effective_output.lower()) if output_override is not None else None
             )
 
             extract_config = loaded_config.to_extract_config(
@@ -1245,18 +1456,45 @@ def extract(
                 allow_unsafe_where=effective_allow_unsafe_where,
             )
 
+        # Apply compliance settings to extract config
+        extract_config.compliance_profiles = effective_compliance
+        extract_config.compliance_strict = effective_compliance_strict
+        extract_config.generate_manifest = effective_manifest
+        extract_config.deterministic = effective_deterministic
+
+        # Compliance profiles auto-enable anonymization
+        if effective_compliance and not extract_config.anonymize and not allow_raw:
+            extract_config.anonymize = True
+
+        try:
+            _enforce_source_guardrails(extract_config)
+            (
+                breakglass_applied,
+                breakglass_applied_reason,
+                breakglass_applied_ticket,
+            ) = _enforce_compliance_policy(
+                extract_config,
+                out_file,
+                allow_raw=allow_raw,
+                breakglass_reason=breakglass_reason,
+                ticket_id=ticket_id,
+            )
+        except ValueError as e:
+            console.print(f"[red]Compliance Policy Error:[/red] {e}")
+            raise typer.Exit(1)
+
         if verbose and not no_progress:
             _show_extraction_settings(extract_config, console)
 
-        result, schema, engine = _execute_extraction(extract_config, console)
+        result, schema_graph, engine = _execute_extraction(extract_config, console)
 
         if not no_progress:
             _show_extraction_summary(result, extract_config, engine, console)
 
-        _handle_output_format(
+        output_files = _handle_output_format(
             output_format=output_format,
             result=result,
-            schema=schema,
+            schema=schema_graph,
             extract_config=extract_config,
             database_url=extract_config.database_url,
             out_file=out_file,
@@ -1269,6 +1507,30 @@ def extract(
             stdout_console=stdout_console,
             db_schema=extract_config.schema,
         )
+
+        # Write compliance manifest after output so file hashes can be recorded.
+        engine_manifest = getattr(engine, "manifest", None)
+        if engine_manifest and effective_manifest:
+            engine_manifest.add_output_file_hashes(output_files, base_dir=Path.cwd())
+
+            if breakglass_applied and breakglass_applied_reason and breakglass_applied_ticket:
+                engine_manifest.set_breakglass(
+                    reason=breakglass_applied_reason,
+                    ticket_id=breakglass_applied_ticket,
+                )
+
+            if extract_config.compliance_manifest_sign:
+                signing_key = os.environ.get(extract_config.compliance_manifest_key_env)
+                if not signing_key:
+                    console.print(
+                        "[red]Compliance Policy Error:[/red] "
+                        "Manifest signing is enabled but signing key environment variable "
+                        f"'{extract_config.compliance_manifest_key_env}' is not set"
+                    )
+                    raise typer.Exit(1)
+                engine_manifest.sign(signing_key)
+
+            _write_compliance_manifest(engine_manifest, out_file, console, no_progress)
 
     except ConnectionError as e:
         logger.error("Database connection failed", error=e.reason, exc_info=True)
@@ -1590,6 +1852,124 @@ def _detect_potential_implicit_fks(schema) -> list[tuple[str, str, str]]:
     return sorted(candidates, key=lambda item: (item[0], item[1], item[2]))
 
 
+def _run_compliance_check_report(
+    adapter,
+    db_schema,
+    profiles: list[str],
+    sample_rows: int,
+    output_mode: str,
+    target_table: str | None,
+    console: Console,
+) -> None:
+    """Run profile-aware coverage scanning and print human/json compliance report."""
+    from dbslice.compliance.profiles import get_profile
+    from dbslice.compliance.scanner import PIIScanner
+    from dbslice.utils.anonymizer import DeterministicAnonymizer
+
+    scan_patterns: set[str] = set()
+    fallback_patterns: dict[str, str] = {}
+    security_null_fields: list[str] = []
+    profile_summaries: list[dict[str, object]] = []
+
+    for profile_name in profiles:
+        profile = get_profile(profile_name)
+        scan_patterns.update(profile.value_scan_patterns)
+        for pattern, provider in profile.required_column_patterns.items():
+            fallback_patterns.setdefault(f"*.{pattern}*", provider)
+        for pattern in profile.required_null_patterns:
+            glob = f"*.{pattern}*"
+            if glob not in security_null_fields:
+                security_null_fields.append(glob)
+        profile_summaries.append(
+            {
+                "profile": profile.name,
+                "display_name": profile.display_name,
+                "identifier_categories": len(profile.identifiers),
+                "required_column_patterns": len(profile.required_column_patterns),
+                "required_null_patterns": len(profile.required_null_patterns),
+            }
+        )
+
+    scanner = PIIScanner(
+        patterns=sorted(scan_patterns)
+        if scan_patterns
+        else ["email", "ssn", "phone", "credit_card"]
+    )
+    anonymizer = DeterministicAnonymizer(seed="compliance-check")
+    anonymizer.configure(
+        [],
+        patterns={},
+        fallback_patterns=fallback_patterns,
+        security_null_fields=security_null_fields,
+    )
+
+    if target_table:
+        tables_to_scan = [target_table]
+    else:
+        tables_to_scan = sorted(db_schema.tables.keys())
+
+    detections: list[dict[str, object]] = []
+    for table_name in tables_to_scan:
+        rows = list(itertools.islice(adapter.fetch_rows(table_name, "TRUE", ()), sample_rows))
+        if not rows:
+            continue
+        for detection in scanner.scan_rows(table_name, rows):
+            protected = anonymizer.should_anonymize(
+                detection.table, detection.column
+            ) or anonymizer.should_null(detection.table, detection.column)
+            detections.append(
+                {
+                    "table": detection.table,
+                    "column": detection.column,
+                    "pattern": detection.pattern_name,
+                    "match_count": detection.match_count,
+                    "sample_size": detection.sample_size,
+                    "match_rate": round(detection.match_rate, 4),
+                    "confidence": detection.confidence,
+                    "protected": protected,
+                }
+            )
+
+    uncovered = [item for item in detections if not item["protected"]]
+    report = {
+        "profiles": profiles,
+        "profile_summaries": profile_summaries,
+        "tables_scanned": len(tables_to_scan),
+        "sample_rows_per_table": sample_rows,
+        "detections_total": len(detections),
+        "detections_protected": len(detections) - len(uncovered),
+        "detections_uncovered": len(uncovered),
+        "status": "pass" if not uncovered else "gaps_found",
+        "uncovered_detections": uncovered,
+    }
+
+    if output_mode == "json":
+        console.print(json.dumps(report, indent=2))
+        return
+
+    console.print("\n[bold]Compliance Coverage Check[/bold]")
+    console.print(f"  Profiles: [cyan]{', '.join(profile.upper() for profile in profiles)}[/cyan]")
+    console.print(f"  Tables scanned: [cyan]{report['tables_scanned']}[/cyan]")
+    console.print(f"  Sample rows/table: [cyan]{sample_rows}[/cyan]")
+    console.print(f"  Detections: [cyan]{report['detections_total']}[/cyan]")
+    console.print(f"  Protected detections: [green]{report['detections_protected']}[/green]")
+    if uncovered:
+        console.print(f"  Uncovered detections: [red]{len(uncovered)}[/red]")
+        console.print("\n[red]Potential Compliance Gaps:[/red]")
+        for finding in uncovered[:50]:
+            console.print(
+                "  "
+                f"{finding['table']}.{finding['column']}: "
+                f"{finding['pattern']} ({finding['match_count']}/{finding['sample_size']}, "
+                f"{finding['confidence']})"
+            )
+        if len(uncovered) > 50:
+            console.print(f"  [dim]... and {len(uncovered) - 50} more[/dim]")
+    else:
+        console.print("  Uncovered detections: [green]0[/green]")
+        console.print("[green]Status: PASS[/green]")
+
+
 @app.command()
 def inspect(
     database_url: Annotated[
@@ -1611,6 +1991,28 @@ def inspect(
             help="PostgreSQL schema name (default: 'public')",
         ),
     ] = None,
+    compliance_check: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--compliance-check",
+            help="Run compliance coverage check for profile(s): gdpr, hipaa, pci-dss",
+        ),
+    ] = None,
+    compliance_output: Annotated[
+        str,
+        typer.Option(
+            "--compliance-output",
+            help="Compliance report output format: human or json",
+        ),
+    ] = "human",
+    sample_rows: Annotated[
+        int,
+        typer.Option(
+            "--sample-rows",
+            help="Rows sampled per table for compliance value scanning",
+            min=1,
+        ),
+    ] = 100,
 ):
     """
     Inspect database schema without extracting data.
@@ -1635,6 +2037,8 @@ def inspect(
                 from dbslice.input_validators import validate_table_name
 
                 validate_table_name(table)
+            if compliance_output not in {"human", "json"}:
+                raise ValueError("--compliance-output must be one of: human, json")
         except (ValidationError, ValueError) as e:
             console.print(f"[red]Validation Error:[/red] {e}")
             raise typer.Exit(1)
@@ -1653,6 +2057,27 @@ def inspect(
         try:
             with console.status("[bold blue]Introspecting schema...[/bold blue]"):
                 db_schema = adapter.get_schema()
+
+            if compliance_check:
+                from dbslice.compliance.profiles import get_profile
+
+                for profile_name in compliance_check:
+                    try:
+                        get_profile(profile_name)
+                    except ValueError as e:
+                        console.print(f"[red]Compliance Error:[/red] {e}")
+                        raise typer.Exit(1)
+
+                _run_compliance_check_report(
+                    adapter=adapter,
+                    db_schema=db_schema,
+                    profiles=compliance_check,
+                    sample_rows=sample_rows,
+                    output_mode=compliance_output,
+                    target_table=table,
+                    console=console,
+                )
+                return
 
             if table:
                 table_info = db_schema.get_table(table)
@@ -1729,9 +2154,7 @@ def inspect(
                     for src_table, src_col, target_table in implicit_candidates[:25]:
                         console.print(f"  {src_table}.{src_col} -> [cyan]{target_table}[/cyan].id")
                     if len(implicit_candidates) > 25:
-                        console.print(
-                            f"  [dim]... and {len(implicit_candidates) - 25} more[/dim]"
-                        )
+                        console.print(f"  [dim]... and {len(implicit_candidates) - 25} more[/dim]")
                     console.print(
                         "  [dim]Tip: define virtual_foreign_keys for confirmed implicit links.[/dim]"
                     )
@@ -1750,6 +2173,134 @@ def inspect(
     except DbsliceError as e:
         console.print(f"[red]Error:[/red] {e}")
         raise typer.Exit(1)
+
+
+@app.command("verify-manifest")
+def verify_manifest(
+    manifest_file: Annotated[
+        Path,
+        typer.Argument(help="Path to compliance manifest JSON file"),
+    ],
+    verify_signature: Annotated[
+        bool,
+        typer.Option(
+            "--verify-signature/--no-verify-signature",
+            help="Verify HMAC manifest signature when present",
+        ),
+    ] = True,
+    key_env: Annotated[
+        str,
+        typer.Option(
+            "--key-env",
+            help="Environment variable containing manifest signing key",
+        ),
+    ] = "DBSLICE_MANIFEST_SIGNING_KEY",
+):
+    """Verify compliance manifest output hashes and optional HMAC signature."""
+    try:
+        if not manifest_file.exists():
+            console.print(f"[red]Error:[/red] Manifest file not found: {manifest_file}")
+            raise typer.Exit(1)
+        if not manifest_file.is_file():
+            console.print(f"[red]Error:[/red] Not a file: {manifest_file}")
+            raise typer.Exit(1)
+
+        try:
+            payload = json.loads(manifest_file.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as e:
+            console.print(f"[red]Error:[/red] Invalid manifest JSON: {e}")
+            raise typer.Exit(1)
+
+        from dbslice.compliance.manifest import verify_manifest_payload
+
+        signing_key: str | None = None
+        if verify_signature:
+            signing_key = os.environ.get(key_env)
+
+        valid, errors = verify_manifest_payload(
+            payload=payload,
+            manifest_path=manifest_file,
+            signing_key=signing_key,
+            verify_signature=verify_signature,
+        )
+
+        if valid:
+            console.print("[green]Manifest verification passed[/green]")
+            return
+
+        console.print("[red]Manifest verification failed:[/red]")
+        for error in errors:
+            console.print(f"  - {error}")
+        raise typer.Exit(1)
+    except typer.Exit:
+        raise
+    except Exception as e:
+        console.print(f"[red]Unexpected error:[/red] {e}")
+        raise typer.Exit(1)
+
+
+@app.command()
+def map(
+    database_url: Annotated[
+        str | None,
+        typer.Argument(help="Optional database URL (can also enter in the UI)"),
+    ] = None,
+    schema: Annotated[
+        str | None,
+        typer.Option("--schema", help="PostgreSQL schema name (default: 'public')"),
+    ] = None,
+    port: Annotated[
+        int,
+        typer.Option("--port", "-p", help="Port for local mapping UI server", min=1024, max=65535),
+    ] = 9473,
+    open_browser: Annotated[
+        bool,
+        typer.Option("--open-browser/--no-open-browser", help="Auto-open browser"),
+    ] = True,
+):
+    """
+    Launch local column-mapping UI.
+
+    Opens a browser-based interface for reviewing database columns and
+    configuring anonymization mappings. Generates a ready-to-use dbslice.yaml.
+
+    The server runs locally on 127.0.0.1 only and requires a session token.
+
+    Examples:
+
+        # Launch mapping UI (enter URL in browser)
+        dbslice map
+
+        # Launch with pre-filled database URL
+        dbslice map postgresql://localhost/myapp
+
+        # Custom port, no auto-open
+        dbslice map postgresql://localhost/myapp --port 8888 --no-open-browser
+    """
+    from dbslice.mapping.server import MappingServer
+
+    resolved_url = database_url
+    if resolved_url is None:
+        resolved_url = os.environ.get("DATABASE_URL")
+
+    server = MappingServer(
+        port=port,
+        database_url=resolved_url or "",
+        schema=schema,
+    )
+
+    console.print("\n[bold]dbslice Column Mapping[/bold]")
+    console.print(f"  URL: [cyan]{server.url}[/cyan]")
+    console.print("  Bound to 127.0.0.1 only (local access)")
+    console.print("\n  Press Ctrl+C to stop.\n")
+
+    try:
+        server.start(open_browser=open_browser)
+    except OSError as e:
+        console.print(f"[red]Error:[/red] Could not start server on port {port}: {e}")
+        raise typer.Exit(1)
+    except KeyboardInterrupt:
+        console.print("\n[dim]Mapping UI stopped.[/dim]")
 
 
 @app.command()

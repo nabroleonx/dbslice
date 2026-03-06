@@ -20,6 +20,19 @@ dbslice extract postgres://prod/db --seed "users.id=1" --anonymize
 
 Never extract production data without `--anonymize`. Foreign keys are preserved automatically.
 
+## 2b. Use Compliance Profiles for Regulated Data
+
+```bash
+dbslice extract postgres://prod/db --seed "users.id=1" \
+  --compliance hipaa --compliance-strict
+```
+
+Compliance profiles (GDPR, HIPAA, PCI-DSS) auto-configure anonymization, run value-based PII scanning, and generate audit manifests. Use `--compliance-strict` to fail if unmasked PII is detected.
+
+## 2c. Treat Output as Pseudonymized Data
+
+Deterministic mode is **pseudonymization**, not full anonymization. For higher privacy, set `anonymization.deterministic: false` and still keep operational controls (least privilege DB account, restricted output location, and manifest review).
+
 ## 3. Validate Extractions
 
 ```bash
@@ -95,6 +108,29 @@ dropdb test_import
 ```
 
 Always verify extracted data loads cleanly into an isolated database before relying on it.
+
+## 11. Use a Compliance Runbook in CI
+
+Suggested CI flow:
+1. `dbslice inspect --compliance-check ... --compliance-output json` on target schema.
+2. `dbslice extract ... --out-file ...` with compliance profiles.
+3. `dbslice verify-manifest ...` to confirm output file hashes.
+4. Optionally sign manifest + output with an external tool (cosign, GPG) for non-repudiation.
+5. Archive artifacts to immutable storage (S3 Object Lock, GCS retention, etc.).
+
+## 12. Compliance Controls (Quick Reference)
+
+These are **runtime CLI checks**, not an IAM or governance system. They reduce accidental mistakes but are not a substitute for network-level controls, access policies, or encryption at rest.
+
+| Risk | Control | Limitation |
+|------|---------|------------|
+| Unmasked PII reaches dev/test | `--compliance ... --compliance-strict`, profile rules, residual scan | Pattern-based detection only; may miss PII in unusual column names or embedded in binary data |
+| Unsafe ad-hoc extraction | `compliance.policy_mode: standard`, breakglass override with reason + ticket | CLI flags can be bypassed by not using the config file |
+| Unknown data source used | `compliance.allow_url_patterns` / `deny_url_patterns` | Regex on URL string; does not prevent DNS aliasing or network-level bypass |
+| Non-TLS DB connection | `compliance.required_sslmode` | Checks URL query param only; does not verify actual TLS handshake |
+| Non-CI execution | `compliance.require_ci: true` | Checks `CI=true` env var, which can be set manually |
+| Output tampering | Manifest `output_file_hashes` + `dbslice verify-manifest` | SHA256 file hashes detect changes after the fact |
+| Manifest tampering | `compliance.sign_manifest: true` with HMAC-SHA256 | Symmetric key — tamper detection only, **not** non-repudiation. For provable origin, wrap with external signing (cosign, GPG) |
 
 ---
 
