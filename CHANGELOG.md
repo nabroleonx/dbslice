@@ -1,6 +1,36 @@
 # CHANGELOG
 
 
+## v1.0.0 (2026-04-06)
+
+### Bug Fixes
+
+- Improve extraction engine and validation mechanisms
+  ([#7](https://github.com/nabroleonx/dbslice/pull/7),
+  [`18c1545`](https://github.com/nabroleonx/dbslice/commit/18c1545f8b9f4450a6e2020edea5d9e6276093c5))
+
+Consolidate duplicate WHERE clause validation, fix NULL filtering inconsistency in FK traversal, add
+  seed cardinality limits, fix Decimal precision loss in JSON output, type ExtractionResult fields,
+  and refactor streaming deferred updates to use chunked fetching.
+
+Additionally, it addresses five previously unimplemented review findings:
+
+- Use \N sentinel for NULL in CSV output to distinguish from empty string - Raise error when
+  passthrough table has no primary key (was silently skipped) - Add --statement-timeout CLI flag for
+  PostgreSQL query timeout - Validate anonymizer provider names at configure time (catch typos) -
+  Add post-extraction compliance manifest validation
+
+BREAKING CHANGE: - JSON output now serializes Decimal values as strings (e.g., "99.99") instead of
+  floats to preserve exact precision. - CSV output now uses \N for NULL values instead of an empty
+  string. - Passthrough tables without a primary key now raise an error instead of being silently
+  skipped.
+
+### Breaking Changes
+
+- - JSON output now serializes Decimal values as strings (e.g., "99.99") instead of floats to
+  preserve exact precision.
+
+
 ## v0.5.0 (2026-03-06)
 
 ### Features
