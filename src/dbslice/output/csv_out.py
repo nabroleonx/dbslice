@@ -212,7 +212,7 @@ class CSVGenerator:
         Format a Python value as CSV field value.
 
         Type conversions:
-        - None -> empty string (CSV convention for NULL)
+        - None -> ``\\N`` (PostgreSQL COPY convention for NULL)
         - bool -> "true"/"false"
         - datetime -> ISO 8601 string
         - date -> ISO 8601 date string
@@ -231,8 +231,9 @@ class CSVGenerator:
             String representation suitable for CSV
         """
         if value is None:
-            # CSV convention: NULL is represented as empty field
-            return ""
+            # Use \N sentinel (PostgreSQL COPY convention) to distinguish
+            # NULL from empty string, enabling lossless round-trips.
+            return "\\N"
 
         if isinstance(value, bool):
             # Use lowercase for consistency with JSON

@@ -12,7 +12,12 @@ from dbslice.config import (
     SeedSpec,
     TraversalDirection,
 )
-from dbslice.constants import DEFAULT_ANONYMIZATION_SEED, DEFAULT_TRAVERSAL_DEPTH
+from dbslice.constants import (
+    DEFAULT_ANONYMIZATION_SEED,
+    DEFAULT_TRAVERSAL_DEPTH,
+    SEED_ROW_WARNING_THRESHOLD,
+)
+from dbslice.core.cycles import CycleInfo, DeferredUpdate
 from dbslice.core.graph import GraphTraverser, TraversalConfig, TraversalResult
 from dbslice.exceptions import (
     ExtractionError,
@@ -24,6 +29,7 @@ from dbslice.models import ForeignKey, SchemaGraph
 from dbslice.output.sql import SQLGenerator
 from dbslice.utils.anonymizer import DeterministicAnonymizer
 from dbslice.utils.connection import get_adapter_for_url, parse_database_url
+from dbslice.utils.profiling import QueryProfiler
 from dbslice.validation import ExtractionValidator, ValidationResult
 
 logger = get_logger(__name__)
@@ -72,11 +78,11 @@ class ExtractionResult:
     stats: dict[str, int] = field(default_factory=dict)
     traversal_path: list[str] = field(default_factory=list)
     has_cycles: bool = False
-    broken_fks: list[Any] = field(default_factory=list)  # list[ForeignKey]
-    deferred_updates: list[Any] = field(default_factory=list)  # list[DeferredUpdate]
-    cycle_infos: list[Any] = field(default_factory=list)  # list[CycleInfo]
+    broken_fks: list[ForeignKey] = field(default_factory=list)
+    deferred_updates: list[DeferredUpdate] = field(default_factory=list)
+    cycle_infos: list[CycleInfo] = field(default_factory=list)
     validation_result: ValidationResult | None = None
-    profiler: Any = None  # Optional QueryProfiler
+    profiler: QueryProfiler | None = None
     used_deferred_cycle_strategy: bool = False
 
     def total_rows(self) -> int:
@@ -206,6 +212,7 @@ class ExtractionEngine:
                 profiler=profiler,
                 schema=self.config.schema,
                 allow_unsafe_where=self.config.allow_unsafe_where,
+                statement_timeout_ms=self.config.statement_timeout_ms,
             )
         else:
             self.adapter = get_adapter_for_url(self.config.database_url)
@@ -535,6 +542,17 @@ class ExtractionEngine:
         if self.manifest:
             for table, rows in tables_data.items():
                 self.manifest.set_table_row_count(table, len(rows))
+
+            if self.config.compliance_profiles:
+                compliance_warnings = self.manifest.validate_compliance(
+                    tables_data, self.config.compliance_profiles
+                )
+                if compliance_warnings:
+                    logger.warning(
+                        "Compliance validation found unanonymized columns",
+                        warning_count=len(compliance_warnings),
+                        profiles=self.config.compliance_profiles,
+                    )
 
         return ExtractionResult(
             tables=tables_data,
@@ -994,6 +1012,22 @@ class ExtractionEngine:
         )
         seed_rows = list(self.adapter.fetch_rows(seed.table, where_clause, params))
 
+        if len(seed_rows) > self.config.max_seed_rows:
+            raise ExtractionError(
+                f"Seed query returned {len(seed_rows)} rows, exceeding limit of "
+                f"{self.config.max_seed_rows}. Use --max-seed-rows to increase the "
+                f"limit or refine your WHERE clause.",
+                table=seed.table,
+            )
+
+        if len(seed_rows) > SEED_ROW_WARNING_THRESHOLD:
+            logger.warning(
+                "Seed query returned a large number of rows",
+                table=seed.table,
+                row_count=len(seed_rows),
+                limit=self.config.max_seed_rows,
+            )
+
         if not seed_rows:
             seed_str = (
                 f"{seed.table}.{seed.column}={seed.value}"
@@ -1060,8 +1094,8 @@ class ExtractionEngine:
         db_type: DatabaseType,
         all_records: dict[str, set[tuple[Any, ...]]],
         insert_order: list[str],
-        broken_fks: list[Any],
-        cycle_infos: list[Any],
+        broken_fks: list[ForeignKey],
+        cycle_infos: list[CycleInfo],
         all_paths: list[str],
         used_deferred_cycle_strategy: bool,
     ) -> ExtractionResult:
@@ -1091,27 +1125,36 @@ class ExtractionEngine:
 
         from dbslice.core.streaming import StreamingExtractionEngine
 
-        deferred_updates = []
+        deferred_updates: list[Any] = []
         if broken_fks:
-            from dbslice.core.cycles import build_deferred_updates
+            from dbslice.core.cycles import build_deferred_updates_chunked
 
             self._log("cycles", f"Breaking {len(broken_fks)} circular reference(s)...")
 
-            # For streaming mode, we need to build deferred updates without having
-            # all data in memory. We fetch the necessary data on-demand.
             with logger.timed_operation("build_deferred_updates_streaming"):
-                temp_data = {}
+                tables_needed: set[str] = set()
                 for fk in broken_fks:
-                    table = fk.source_table
-                    if table not in temp_data and table in all_records:
-                        pk_values = all_records[table]
-                        table_info = self.schema.get_table(table)
-                        if table_info:
-                            pk_columns = table_info.primary_key
-                            rows = list(self.adapter.fetch_by_pk(table, pk_columns, pk_values))
-                            temp_data[table] = rows
+                    if fk.source_table in all_records:
+                        tables_needed.add(fk.source_table)
 
-                deferred_updates = build_deferred_updates(broken_fks, temp_data, self.schema)
+                chunk_iterators = {}
+                for table in tables_needed:
+                    pk_values = all_records[table]
+                    table_info = self.schema.get_table(table)
+                    if table_info:
+                        pk_columns = table_info.primary_key
+                        chunk_iterators[table] = (
+                            self.adapter.fetch_by_pk_chunked(
+                                table,
+                                pk_columns,
+                                pk_values,
+                                chunk_size=self.config.streaming_chunk_size,
+                            )
+                        )
+
+                deferred_updates = build_deferred_updates_chunked(
+                    broken_fks, self.schema, chunk_iterators
+                )
 
             logger.info(
                 "Circular references resolved",
@@ -1145,7 +1188,7 @@ class ExtractionEngine:
 
     def _topological_sort(
         self, tables: set[str], db_type: DatabaseType
-    ) -> tuple[list[str], list[Any], list[Any], bool]:
+    ) -> tuple[list[str], list[ForeignKey], list[CycleInfo], bool]:
         """
         Topologically sort tables based on FK dependencies with cycle handling.
 
@@ -1158,7 +1201,6 @@ class ExtractionEngine:
         assert self.schema is not None
 
         from dbslice.core.cycles import (
-            CycleInfo,
             break_cycles_at_nullable_fks,
             find_cycles_dfs,
             identify_cycle_fks,

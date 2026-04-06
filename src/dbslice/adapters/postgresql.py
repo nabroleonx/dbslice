@@ -27,6 +27,7 @@ class PostgreSQLAdapter(DatabaseAdapter):
         profiler: Any = None,
         schema: str | None = None,
         allow_unsafe_where: bool = False,
+        statement_timeout_ms: int = 0,
     ):
         self._conn: Any = None
         self._schema_name = schema or "public"
@@ -34,6 +35,7 @@ class PostgreSQLAdapter(DatabaseAdapter):
         self.batch_size = batch_size or self.DEFAULT_BATCH_SIZE
         self.profiler = profiler
         self.allow_unsafe_where = allow_unsafe_where
+        self.statement_timeout_ms = statement_timeout_ms
 
     def connect(self, url: str) -> None:
         """Establish PostgreSQL connection."""
@@ -61,6 +63,16 @@ class PostgreSQLAdapter(DatabaseAdapter):
             )
             # Use autocommit for reads by default
             self._conn.autocommit = True
+
+            # Set statement_timeout to prevent runaway queries
+            if self.statement_timeout_ms > 0:
+                with self._conn.cursor() as cur:
+                    cur.execute(
+                        "SET statement_timeout = %s", (self.statement_timeout_ms,)
+                    )
+                logger.debug(
+                    "statement_timeout set", timeout_ms=self.statement_timeout_ms
+                )
 
             # Set search_path so unqualified table names resolve to the target schema
             if self._schema_name != "public":
@@ -628,13 +640,17 @@ class PostgreSQLAdapter(DatabaseAdapter):
                         cur.execute(query, params)
                         rows = cur.fetchall()
                         for row in rows:
-                            result.add(row)
+                            # Filter out NULL values (nullable FKs)
+                            if None not in row:
+                                result.add(row)
                         tracker.record_rows(len(rows))
             else:
                 with self._conn.cursor() as cur:
                     cur.execute(query, params)
                     for row in cur.fetchall():
-                        result.add(row)
+                        # Filter out NULL values (nullable FKs)
+                        if None not in row:
+                            result.add(row)
 
         logger.debug(
             "Fetched referencing PKs with batching",

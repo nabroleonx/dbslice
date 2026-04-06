@@ -13,7 +13,9 @@ from rich.status import Status
 from dbslice import __version__
 from dbslice.config import ExtractConfig, OutputFormat, SeedSpec, TraversalDirection
 from dbslice.constants import (
+    DEFAULT_MAX_SEED_ROWS,
     DEFAULT_OUTPUT_FILE_MODE,
+    DEFAULT_STATEMENT_TIMEOUT_MS,
     DEFAULT_STREAMING_CHUNK_SIZE,
     DEFAULT_STREAMING_THRESHOLD,
     DEFAULT_TRAVERSAL_DEPTH,
@@ -276,6 +278,8 @@ def _build_extract_config(
     output_file_mode: int,
     schema: str | None = None,
     allow_unsafe_where: bool = False,
+    max_seed_rows: int = DEFAULT_MAX_SEED_ROWS,
+    statement_timeout_ms: int = DEFAULT_STATEMENT_TIMEOUT_MS,
 ) -> ExtractConfig:
     """
     Build ExtractConfig from validated CLI parameters.
@@ -301,6 +305,7 @@ def _build_extract_config(
         stream_threshold: Auto-enable streaming above this row count
         stream_chunk_size: Streaming fetch chunk size
         output_file_mode: Permissions mode for output files
+        max_seed_rows: Maximum rows a single seed query may return
 
     Returns:
         Configured ExtractConfig object
@@ -328,6 +333,8 @@ def _build_extract_config(
         output_file_mode=output_file_mode,
         schema=schema,
         allow_unsafe_where=bool(allow_unsafe_where),
+        max_seed_rows=max_seed_rows,
+        statement_timeout_ms=statement_timeout_ms,
     )
 
 
@@ -1095,6 +1102,20 @@ def extract(
             help="Number of rows to fetch per chunk in streaming mode (default: 1000)",
         ),
     ] = None,
+    max_seed_rows: Annotated[
+        int | None,
+        typer.Option(
+            "--max-seed-rows",
+            help=f"Maximum rows a single seed query may return (default: {DEFAULT_MAX_SEED_ROWS})",
+        ),
+    ] = None,
+    statement_timeout: Annotated[
+        int | None,
+        typer.Option(
+            "--statement-timeout",
+            help="PostgreSQL statement timeout in milliseconds (0 = no timeout, default: 0)",
+        ),
+    ] = None,
     output_file_mode: Annotated[
         str | None,
         typer.Option(
@@ -1257,6 +1278,12 @@ def extract(
         effective_stream_chunk_size = (
             stream_chunk_size if stream_chunk_size is not None else DEFAULT_STREAMING_CHUNK_SIZE
         )
+        effective_max_seed_rows = (
+            max_seed_rows if max_seed_rows is not None else DEFAULT_MAX_SEED_ROWS
+        )
+        effective_statement_timeout = (
+            statement_timeout if statement_timeout is not None else DEFAULT_STATEMENT_TIMEOUT_MS
+        )
         effective_output_file_mode = DEFAULT_OUTPUT_FILE_MODE
 
         loaded_config = None
@@ -1377,6 +1404,10 @@ def extract(
                 raise ValueError("--stream-threshold must be greater than 0")
             if effective_stream_chunk_size <= 0:
                 raise ValueError("--stream-chunk-size must be greater than 0")
+            if effective_max_seed_rows <= 0:
+                raise ValueError("--max-seed-rows must be greater than 0")
+            if effective_statement_timeout < 0:
+                raise ValueError("--statement-timeout must be >= 0")
         except ValidationError as e:
             console.print(f"[red]Validation Error:[/red] {e}")
             raise typer.Exit(1)
@@ -1454,7 +1485,12 @@ def extract(
                 output_file_mode=effective_output_file_mode,
                 schema=schema,
                 allow_unsafe_where=effective_allow_unsafe_where,
+                max_seed_rows=effective_max_seed_rows,
             )
+
+        # Apply CLI overrides to config
+        extract_config.max_seed_rows = effective_max_seed_rows
+        extract_config.statement_timeout_ms = effective_statement_timeout
 
         # Apply compliance settings to extract config
         extract_config.compliance_profiles = effective_compliance

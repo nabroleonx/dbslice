@@ -477,6 +477,23 @@ class TestExtractionValidator:
         orphan = result.orphaned_records[0]
         assert orphan.fk_values == (1, 999)
 
+    def test_extract_fk_values_raises_on_missing_column(self, simple_schema):
+        """Test that missing FK columns raise KeyError instead of silently returning None."""
+        validator = ExtractionValidator(simple_schema)
+
+        # Row is missing the 'user_id' FK column entirely
+        tables = {
+            "users": [
+                {"id": 1, "email": "alice@example.com"},
+            ],
+            "orders": [
+                {"id": 1, "total": 100.0},  # 'user_id' column missing
+            ],
+        }
+
+        with pytest.raises(KeyError, match="user_id"):
+            validator.validate(tables)
+
 
 class TestOrphanedRecord:
     """Tests for OrphanedRecord dataclass."""

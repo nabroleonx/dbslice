@@ -200,6 +200,73 @@ class ComplianceManifest:
         self.signature_algorithm = "hmac-sha256"
         self.signature = f"hmac-sha256:{digest}"
 
+    def validate_compliance(
+        self,
+        extracted_tables: dict[str, list[dict[str, Any]]],
+        profiles: list[str],
+    ) -> list[ManifestWarning]:
+        """Validate that all columns required by compliance profiles were actually anonymized.
+
+        Compares the columns present in the extracted data against the manifest's
+        recorded actions. Any column that matches a compliance profile's required
+        pattern but was recorded as ``unmasked`` (or not recorded at all) is
+        flagged as a warning.
+
+        Args:
+            extracted_tables: The actual extracted data (table -> rows).
+            profiles: Names of active compliance profiles.
+
+        Returns:
+            List of ManifestWarning objects for columns that should have been
+            anonymized but were not.
+        """
+        from dbslice.compliance.profiles import get_profile
+
+        new_warnings: list[ManifestWarning] = []
+
+        # Build a set of (table, column) pairs that were masked or nulled
+        protected: set[tuple[str, str]] = set()
+        for table_name, table_entry in self.tables.items():
+            for masked in table_entry.fields_masked:
+                protected.add((table_name, masked.column))
+            for nulled in table_entry.fields_nulled:
+                protected.add((table_name, nulled.column))
+            for col in table_entry.fields_preserved_fk:
+                protected.add((table_name, col))
+
+        for profile_name in profiles:
+            try:
+                profile = get_profile(profile_name)
+            except ValueError:
+                continue
+
+            required_patterns = profile.required_column_patterns
+
+            for table_name, rows in extracted_tables.items():
+                if not rows:
+                    continue
+                columns = list(rows[0].keys())
+                for col in columns:
+                    if (table_name, col) in protected:
+                        continue
+                    col_lower = col.lower()
+                    for pattern in required_patterns:
+                        if pattern in col_lower:
+                            warning = ManifestWarning(
+                                table=table_name,
+                                column=col,
+                                reason=(
+                                    f"Column matches {profile.display_name} required "
+                                    f"pattern '{pattern}' but was not anonymized"
+                                ),
+                                severity="error",
+                            )
+                            new_warnings.append(warning)
+                            self.warnings.append(warning)
+                            break
+
+        return new_warnings
+
     def to_dict(self) -> dict[str, Any]:
         """Convert to a JSON-serializable dictionary."""
         tables_dict: dict[str, Any] = {}

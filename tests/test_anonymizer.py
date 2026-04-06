@@ -1,5 +1,7 @@
 """Tests for anonymization functionality."""
 
+import pytest
+
 from dbslice.models import Column, ForeignKey, SchemaGraph, Table
 from dbslice.utils.anonymizer import DeterministicAnonymizer
 
@@ -548,3 +550,40 @@ class TestDeterministicAnonymizer:
 
         assert result_firstname == result_firstname2
         assert result_lastname == result_lastname2
+
+    def test_invalid_field_provider_raises(self):
+        """Typo in field_providers should raise ValueError at configure time."""
+        anon = DeterministicAnonymizer()
+        with pytest.raises(ValueError, match="Unknown anonymization provider"):
+            anon.configure(
+                [],
+                field_providers={"users.email": "nonexistent_faker_method"},
+            )
+
+    def test_invalid_pattern_provider_raises(self):
+        """Typo in pattern provider should raise ValueError at configure time."""
+        anon = DeterministicAnonymizer()
+        with pytest.raises(ValueError, match="Unknown anonymization provider"):
+            anon.configure(
+                [],
+                patterns={"*.email": "hipaa_zip_3"},  # typo: should be hipaa_zip3
+            )
+
+    def test_custom_transformer_names_are_valid(self):
+        """Custom transformer names (e.g., hipaa_zip3) should pass validation."""
+        anon = DeterministicAnonymizer()
+        # Should not raise
+        anon.configure(
+            [],
+            patterns={"*.zip": "hipaa_zip3", "*.dob": "year_only"},
+        )
+
+    def test_valid_faker_methods_pass_validation(self):
+        """Standard Faker method names should pass validation."""
+        anon = DeterministicAnonymizer()
+        # Should not raise
+        anon.configure(
+            [],
+            field_providers={"users.email": "email", "users.name": "name"},
+            patterns={"*.phone": "phone_number"},
+        )

@@ -266,6 +266,9 @@ class DeterministicAnonymizer:
         ]
         self.security_null_fields = [pattern.lower() for pattern in (security_null_fields or [])]
 
+        # Validate that all explicit provider names are resolvable
+        self._validate_provider_names()
+
         logger.info(
             "Anonymizer configured",
             redact_field_count=len(self.redact_fields),
@@ -274,6 +277,36 @@ class DeterministicAnonymizer:
             fallback_pattern_count=len(self.fallback_patterns),
             security_null_pattern_count=len(self.security_null_fields),
         )
+
+    def _validate_provider_names(self) -> None:
+        """Validate that all configured provider names are valid Faker methods or custom transformers."""
+        from dbslice.compliance.transformers import CUSTOM_TRANSFORMERS
+
+        # Collect all explicitly configured provider names
+        all_providers: dict[str, str] = {}  # provider -> source description
+        for field, provider in self.field_providers.items():
+            all_providers.setdefault(provider, f"field_providers[{field}]")
+        for pattern, provider in self.custom_patterns:
+            all_providers.setdefault(provider, f"patterns[{pattern}]")
+        for pattern, provider in self.fallback_patterns:
+            all_providers.setdefault(provider, f"fallback_patterns[{pattern}]")
+
+        invalid = []
+        for provider, source in all_providers.items():
+            if provider in CUSTOM_TRANSFORMERS:
+                continue
+            if hasattr(self.fake, provider):
+                continue
+            invalid.append((provider, source))
+
+        if invalid:
+            details = ", ".join(f"'{p}' (from {s})" for p, s in invalid)
+            raise ValueError(
+                f"Unknown anonymization provider(s): {details}. "
+                f"Each provider must be a valid Faker method or a custom transformer "
+                f"({', '.join(sorted(CUSTOM_TRANSFORMERS))}). "
+                f"Check for typos in your anonymization configuration."
+            )
 
     def _is_foreign_key_column(self, table: str, column: str) -> bool:
         """

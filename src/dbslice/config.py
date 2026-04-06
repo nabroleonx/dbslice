@@ -5,7 +5,9 @@ from enum import Enum
 from typing import Any
 
 from dbslice.constants import (
+    DEFAULT_MAX_SEED_ROWS,
     DEFAULT_OUTPUT_FILE_MODE,
+    DEFAULT_STATEMENT_TIMEOUT_MS,
     DEFAULT_STREAMING_CHUNK_SIZE,
     DEFAULT_STREAMING_THRESHOLD,
     DEFAULT_TRAVERSAL_DEPTH,
@@ -316,6 +318,8 @@ class ExtractConfig:
     table_direction_overrides: dict[str, TraversalDirection] = field(default_factory=dict)
     row_limit_global: int | None = None
     row_limit_per_table: dict[str, int] = field(default_factory=dict)
+    max_seed_rows: int = DEFAULT_MAX_SEED_ROWS
+    statement_timeout_ms: int = DEFAULT_STATEMENT_TIMEOUT_MS
     anonymization_seed: str | None = None
     anonymization_field_providers: dict[str, str] = field(default_factory=dict)
     anonymization_patterns: dict[str, str] = field(default_factory=dict)

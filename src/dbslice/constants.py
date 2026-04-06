@@ -30,3 +30,12 @@ DEFAULT_STREAMING_CHUNK_SIZE = 1000
 
 DEFAULT_OUTPUT_FILE_MODE = 0o600
 """Secure default permissions for newly created output files."""
+
+DEFAULT_MAX_SEED_ROWS = 10000
+"""Default maximum number of rows a single seed query may return."""
+
+SEED_ROW_WARNING_THRESHOLD = 1000
+"""Warn when a seed query returns more than this many rows."""
+
+DEFAULT_STATEMENT_TIMEOUT_MS = 0
+"""Default PostgreSQL statement_timeout in milliseconds (0 = no timeout)."""
