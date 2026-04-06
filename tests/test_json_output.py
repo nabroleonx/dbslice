@@ -43,6 +43,13 @@ class TestDatabaseTypeEncoder:
         result = json.dumps(d, cls=DatabaseTypeEncoder)
         assert "99.99" in result
 
+    def test_encode_decimal_large_value_preserves_precision(self):
+        """Verify that large Decimal values preserve exact precision (no float rounding)."""
+        d = Decimal("99999999999999.99")
+        result = json.dumps(d, cls=DatabaseTypeEncoder)
+        parsed = json.loads(result)
+        assert parsed == "99999999999999.99"
+
     def test_encode_uuid(self):
         u = UUID("12345678-1234-5678-1234-567812345678")
         result = json.dumps(u, cls=DatabaseTypeEncoder)
@@ -83,7 +90,7 @@ class TestDatabaseTypeEncoder:
         # Verify all types were encoded correctly
         assert "2024-01-15" in parsed["datetime"]
         assert parsed["date"] == "2024-01-15"
-        assert parsed["decimal"] == 99.99
+        assert parsed["decimal"] == "99.99"
         assert "12345678-1234-5678" in parsed["uuid"]
         assert parsed["bytes"] == "0001"
         assert parsed["string"] == "test"
@@ -272,7 +279,7 @@ class TestJSONGenerator:
         user = parsed["tables"]["users"][0]
         assert "2024-01-15" in user["created_at"]
         assert user["birthday"] == "1990-05-20"
-        assert user["balance"] == 1234.56
+        assert user["balance"] == "1234.56"
         assert "12345678-1234-5678" in user["uuid"]
         assert user["avatar"] == "89504e47"  # hex of b"\x89PNG"
 
@@ -554,4 +561,4 @@ class TestIntegration:
         assert len(parsed["tables"]["users"]) == 2
         assert len(parsed["tables"]["orders"]) == 3
         assert parsed["tables"]["users"][0]["email"] == "user1@example.com"
-        assert parsed["tables"]["orders"][0]["amount"] == 99.99
+        assert parsed["tables"]["orders"][0]["amount"] == "99.99"

@@ -5,6 +5,7 @@ from typing import Any
 from dbslice.adapters.base import DatabaseAdapter
 from dbslice.config import TraversalDirection
 from dbslice.constants import DEFAULT_TRAVERSAL_DEPTH
+from dbslice.exceptions import ExtractionError
 from dbslice.logging import get_logger
 from dbslice.models import ForeignKey, SchemaGraph
 
@@ -372,11 +373,12 @@ class GraphTraverser:
 
             pk_columns = table_info.primary_key
             if not pk_columns:
-                logger.warning(
-                    "Passthrough table has no primary key, skipping",
+                raise ExtractionError(
+                    f"Passthrough table '{table}' has no primary key. "
+                    f"Passthrough tables must have a primary key to extract all rows. "
+                    f"Remove it from passthrough or add a primary key.",
                     table=table,
                 )
-                continue
 
             logger.debug("Fetching all rows from passthrough table", table=table)
             all_pks = self.adapter.fetch_all_pks(table, pk_columns)

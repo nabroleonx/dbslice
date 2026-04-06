@@ -295,7 +295,7 @@ class ExtractionValidator:
         Returns:
             Tuple of FK values
         """
-        return tuple(row.get(col) for col in fk_columns)
+        return tuple(row[col] for col in fk_columns)
 
     def _has_parent_record(
         self,

@@ -1,3 +1,4 @@
+from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Any
 
@@ -252,42 +253,74 @@ def build_deferred_updates(
     Returns:
         List of DeferredUpdate objects describing the UPDATE statements needed
     """
-    deferred_updates = []
+    # Wrap each table's row list as a single-chunk iterator to reuse the
+    # chunked implementation, avoiding duplicated logic.
+    chunk_iterators: dict[str, Iterator[list[dict[str, Any]]]] = {
+        table: iter([rows]) for table, rows in tables_data.items()
+    }
+    return build_deferred_updates_chunked(fks_to_break, schema, chunk_iterators)
 
+
+def build_deferred_updates_chunked(
+    fks_to_break: list[ForeignKey],
+    schema: SchemaGraph,
+    chunk_iterators: dict[str, Iterator[list[dict[str, Any]]]],
+) -> list[DeferredUpdate]:
+    """Build deferred UPDATE statements by processing rows in chunks.
+
+    Unlike `build_deferred_updates` which requires all row data in memory,
+    this variant processes rows incrementally via chunk iterators. Only the
+    resulting DeferredUpdate objects (which contain just PK and FK values)
+    are accumulated in memory.
+
+    Args:
+        fks_to_break: List of ForeignKey objects that were broken
+        schema: Database schema graph
+        chunk_iterators: Map of table name to an iterator yielding chunks
+            (lists) of row dicts
+
+    Returns:
+        List of DeferredUpdate objects describing the UPDATE statements needed
+    """
+    # Group broken FKs by source table so we can process each table's
+    # chunks once and check all relevant FKs per row.
+    fks_by_table: dict[str, list[ForeignKey]] = {}
     for fk in fks_to_break:
-        source_table = fk.source_table
-        fk_columns = fk.source_columns
+        fks_by_table.setdefault(fk.source_table, []).append(fk)
 
-        if source_table not in tables_data:
+    deferred_updates: list[DeferredUpdate] = []
+
+    for table, table_fks in fks_by_table.items():
+        if table not in chunk_iterators:
             continue
 
-        table_info = schema.get_table(source_table)
+        table_info = schema.get_table(table)
         if not table_info:
             continue
 
         pk_columns = table_info.primary_key
 
-        for row_data in tables_data[source_table]:
-            for fk_col in fk_columns:
-                if fk_col not in row_data:
-                    continue
+        for chunk in chunk_iterators[table]:
+            for row_data in chunk:
+                for fk in table_fks:
+                    for fk_col in fk.source_columns:
+                        if fk_col not in row_data:
+                            continue
 
-                fk_value = row_data[fk_col]
+                        fk_value = row_data[fk_col]
+                        if fk_value is None:
+                            continue
 
-                # Skip if value is already NULL (no update needed)
-                if fk_value is None:
-                    continue
+                        pk_values = tuple(row_data[col] for col in pk_columns)
 
-                pk_values = tuple(row_data[col] for col in pk_columns)
-
-                deferred_updates.append(
-                    DeferredUpdate(
-                        table=source_table,
-                        pk_columns=pk_columns,
-                        pk_values=pk_values,
-                        fk_column=fk_col,
-                        fk_value=fk_value,
-                    )
-                )
+                        deferred_updates.append(
+                            DeferredUpdate(
+                                table=table,
+                                pk_columns=pk_columns,
+                                pk_values=pk_values,
+                                fk_column=fk_col,
+                                fk_value=fk_value,
+                            )
+                        )
 
     return deferred_updates

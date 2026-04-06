@@ -19,7 +19,7 @@ class DatabaseTypeEncoder(json.JSONEncoder):
     - date -> ISO 8601 date string (YYYY-MM-DD)
     - time -> ISO 8601 time string (HH:MM:SS[.ffffff])
     - timedelta -> total seconds (as float)
-    - Decimal -> float
+    - Decimal -> string (preserves exact precision)
     - UUID -> string
     - bytes -> hex string
     - Any other non-serializable type -> string representation
@@ -49,8 +49,8 @@ class DatabaseTypeEncoder(json.JSONEncoder):
             return obj.total_seconds()
 
         if isinstance(obj, Decimal):
-            # Convert to float for JSON compatibility
-            return float(obj)
+            # Convert to string to preserve exact precision for financial data
+            return str(obj)
 
         if isinstance(obj, UUID):
             return str(obj)

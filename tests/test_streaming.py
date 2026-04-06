@@ -509,6 +509,153 @@ def test_streaming_with_cycles(sample_schema, tmp_path):
     assert "orders" in sql_content
 
 
+def test_streaming_deferred_updates_use_chunked_fetch(sample_schema, tmp_path):
+    """Streaming mode should build deferred updates via chunked fetching, not list().
+
+    This verifies that the streaming extract path uses fetch_by_pk_chunked
+    (not fetch_by_pk with list()) when processing broken FK tables for
+    deferred updates, so that memory stays bounded.
+    """
+    from dbslice.models import Column, ForeignKey, Table
+
+    # Build a schema with a circular dependency: users <-> orders
+    users_table = Table(
+        name="users",
+        schema="main",
+        columns=[
+            Column(name="id", data_type="INTEGER", nullable=False, is_primary_key=True),
+            Column(name="email", data_type="TEXT", nullable=False, is_primary_key=False),
+            Column(name="name", data_type="TEXT", nullable=True, is_primary_key=False),
+            Column(
+                name="last_order_id",
+                data_type="INTEGER",
+                nullable=True,
+                is_primary_key=False,
+            ),
+        ],
+        primary_key=("id",),
+        foreign_keys=[],
+    )
+
+    orders_table = Table(
+        name="orders",
+        schema="main",
+        columns=[
+            Column(name="id", data_type="INTEGER", nullable=False, is_primary_key=True),
+            Column(
+                name="user_id",
+                data_type="INTEGER",
+                nullable=False,
+                is_primary_key=False,
+            ),
+            Column(name="total", data_type="REAL", nullable=True, is_primary_key=False),
+            Column(name="status", data_type="TEXT", nullable=True, is_primary_key=False),
+        ],
+        primary_key=("id",),
+        foreign_keys=[],
+    )
+
+    fk_orders_users = ForeignKey(
+        name="fk_orders_users",
+        source_table="orders",
+        source_columns=("user_id",),
+        target_table="users",
+        target_columns=("id",),
+        is_nullable=False,
+    )
+    fk_users_orders = ForeignKey(
+        name="fk_users_orders",
+        source_table="users",
+        source_columns=("last_order_id",),
+        target_table="orders",
+        target_columns=("id",),
+        is_nullable=True,
+    )
+
+    from dbslice.models import SchemaGraph
+
+    schema = SchemaGraph(
+        tables={"users": users_table, "orders": orders_table},
+        edges=[fk_orders_users, fk_users_orders],
+    )
+
+    data = {
+        "users": [
+            {"id": i, "email": f"u{i}@test.com", "name": f"U{i}", "last_order_id": i}
+            for i in range(1, 6)
+        ],
+        "orders": [
+            {"id": i, "user_id": i, "total": 10.0 * i, "status": "ok"} for i in range(1, 6)
+        ],
+    }
+
+    # Adapter that tracks whether fetch_by_pk_chunked was used
+    class TrackingAdapter(ChunkedMockAdapter):
+        def __init__(self, schema, data):
+            super().__init__(schema, data, chunk_size=2)
+            self.fetch_by_pk_calls: list[str] = []
+
+        def fetch_by_pk(self, table, pk_columns, pk_values):
+            self.fetch_by_pk_calls.append(table)
+            return super().fetch_by_pk(table, pk_columns, pk_values)
+
+        def fetch_by_pk_chunked(self, table, pk_columns, pk_values, chunk_size=1000):
+            self.chunked_fetch_calls.append(
+                {"table": table, "pk_count": len(pk_values), "chunk_size": chunk_size}
+            )
+            # Yield in small chunks to prove we don't need all at once
+            all_rows = list(super().fetch_by_pk(table, pk_columns, pk_values))
+            for i in range(0, len(all_rows), chunk_size):
+                yield all_rows[i : i + chunk_size]
+
+    adapter = TrackingAdapter(schema, data)
+    adapter.connect("test://localhost/test")
+
+    all_records = {
+        "users": {(i,) for i in range(1, 6)},
+        "orders": {(i,) for i in range(1, 6)},
+    }
+
+    config = ExtractConfig(
+        database_url="test://localhost/test",
+        seeds=[SeedSpec.parse("users.id=1")],
+        stream=True,
+        output_file=str(tmp_path / "chunked_deferred.sql"),
+        streaming_chunk_size=2,
+    )
+
+    engine = ExtractionEngine(config)
+    engine.adapter = adapter
+    engine.schema = schema
+
+    # Reset call tracking before the streaming extract
+    adapter.fetch_by_pk_calls.clear()
+    adapter.chunked_fetch_calls.clear()
+
+    result = engine._do_streaming_extract(
+        db_type=DatabaseType.POSTGRESQL,
+        all_records=all_records,
+        insert_order=["orders", "users"],
+        broken_fks=[fk_users_orders],
+        cycle_infos=[],
+        all_paths=[],
+        used_deferred_cycle_strategy=True,
+    )
+
+    # Verify chunked fetch was used for the broken FK table
+    chunked_tables = [c["table"] for c in adapter.chunked_fetch_calls]
+    assert "users" in chunked_tables, (
+        "Expected fetch_by_pk_chunked to be used for the broken FK table 'users'"
+    )
+
+    # The chunked_fetch_calls list confirms the chunked path was taken
+    # instead of loading all rows into memory with list(fetch_by_pk(...)).
+    assert len(adapter.chunked_fetch_calls) > 0
+
+    # Result should still be valid
+    assert result.total_rows() > 0
+
+
 def test_streaming_empty_table(sample_schema, tmp_path):
     """Test streaming handles empty tables gracefully."""
     data = {

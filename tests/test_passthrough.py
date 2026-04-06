@@ -3,6 +3,7 @@
 import pytest
 
 from dbslice.core.graph import GraphTraverser, TraversalConfig
+from dbslice.exceptions import ExtractionError
 from dbslice.models import Column, ForeignKey, SchemaGraph, Table
 from tests.conftest import MockAdapter
 
@@ -383,7 +384,7 @@ def test_passthrough_with_exclude_tables(
 
 
 def test_passthrough_table_without_pk(passthrough_schema: SchemaGraph):
-    """Test that passthrough tables without primary keys are skipped."""
+    """Test that passthrough tables without primary keys raise an error."""
     # Add a table without a primary key
     no_pk_table = Table(
         name="logs",
@@ -418,10 +419,5 @@ def test_passthrough_table_without_pk(passthrough_schema: SchemaGraph):
         passthrough_tables={"logs", "countries"},
     )
 
-    result = traverser.traverse("users", seed_pks, config)
-
-    # Table without PK should not be included
-    assert "logs" not in result.records
-
-    # Table with PK should be included
-    assert "countries" in result.records
+    with pytest.raises(ExtractionError, match="no primary key"):
+        traverser.traverse("users", seed_pks, config)

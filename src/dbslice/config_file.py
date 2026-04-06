@@ -10,7 +10,9 @@ import yaml
 
 from dbslice.config import ExtractConfig, OutputFormat, SeedSpec, TraversalDirection
 from dbslice.constants import (
+    DEFAULT_MAX_SEED_ROWS,
     DEFAULT_OUTPUT_FILE_MODE,
+    DEFAULT_STATEMENT_TIMEOUT_MS,
     DEFAULT_STREAMING_CHUNK_SIZE,
     DEFAULT_STREAMING_THRESHOLD,
     DEFAULT_TRAVERSAL_DEPTH,
@@ -42,6 +44,8 @@ _EXTRACTION_KEYS = {
     "fail_on_validation_error",
     "max_rows_per_table",
     "allow_unsafe_where",
+    "max_seed_rows",
+    "statement_timeout_ms",
 }
 _ANONYMIZATION_KEYS = {
     "enabled",
@@ -308,6 +312,12 @@ class ExtractionConfig:
 
     allow_unsafe_where: bool = False
     """Allow seed WHERE clauses with subqueries (trusted inputs only)."""
+
+    max_seed_rows: int | None = None
+    """Maximum rows a single seed query may return (None = use global default)."""
+
+    statement_timeout_ms: int | None = None
+    """PostgreSQL statement_timeout in milliseconds (None = use global default)."""
 
 
 @dataclass
@@ -584,6 +594,8 @@ class DbsliceConfig:
             fail_on_validation_error=extraction_data.get("fail_on_validation_error", False),
             max_rows_per_table=extraction_data.get("max_rows_per_table"),
             allow_unsafe_where=extraction_data.get("allow_unsafe_where", False),
+            max_seed_rows=extraction_data.get("max_seed_rows"),
+            statement_timeout_ms=extraction_data.get("statement_timeout_ms"),
         )
 
         if not isinstance(extraction.default_depth, int) or extraction.default_depth < 1:
@@ -610,6 +622,15 @@ class DbsliceConfig:
             not isinstance(extraction.max_rows_per_table, int) or extraction.max_rows_per_table <= 0
         ):
             raise ValueError("'extraction.max_rows_per_table' must be a positive integer")
+        if extraction.max_seed_rows is not None and (
+            not isinstance(extraction.max_seed_rows, int) or extraction.max_seed_rows <= 0
+        ):
+            raise ValueError("'extraction.max_seed_rows' must be a positive integer")
+        if extraction.statement_timeout_ms is not None and (
+            not isinstance(extraction.statement_timeout_ms, int)
+            or extraction.statement_timeout_ms < 0
+        ):
+            raise ValueError("'extraction.statement_timeout_ms' must be a non-negative integer")
 
         anon_data = data.get("anonymization", {})
         if not isinstance(anon_data, dict):
@@ -1195,6 +1216,8 @@ class DbsliceConfig:
             virtual_foreign_keys=virtual_fks,
             schema=final_schema,
             allow_unsafe_where=final_allow_unsafe_where,
+            max_seed_rows=self.extraction.max_seed_rows or DEFAULT_MAX_SEED_ROWS,
+            statement_timeout_ms=self.extraction.statement_timeout_ms or DEFAULT_STATEMENT_TIMEOUT_MS,
             compliance_profiles=self.compliance.profiles,
             compliance_strict=self.compliance.strict,
             generate_manifest=self.compliance.generate_manifest
@@ -1271,6 +1294,8 @@ class DbsliceConfig:
                 output.append(f"    - {table}")
         if self.extraction.max_rows_per_table is not None:
             output.append(f"  max_rows_per_table: {self.extraction.max_rows_per_table}")
+        if self.extraction.max_seed_rows is not None:
+            output.append(f"  max_seed_rows: {self.extraction.max_seed_rows}")
         output.append("")
 
         if include_comments:

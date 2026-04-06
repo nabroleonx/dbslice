@@ -7,6 +7,7 @@ from dbslice.core.cycles import (
     DeferredUpdate,
     break_cycles_at_nullable_fks,
     build_deferred_updates,
+    build_deferred_updates_chunked,
     find_cycles_dfs,
     identify_cycle_fks,
     select_nullable_fk_to_break,
@@ -425,6 +426,148 @@ class TestDeferredUpdate:
         assert "tenant_id = 1" in where_clause
         assert "id = 100" in where_clause
         assert " AND " in where_clause
+
+
+class TestBuildDeferredUpdatesChunked:
+    """Tests for the chunked (streaming-friendly) deferred update builder."""
+
+    def test_matches_non_chunked_output(self):
+        """Chunked variant should produce same DeferredUpdates as the original."""
+        fk = ForeignKey(
+            name="fk_manager",
+            source_table="employees",
+            source_columns=("manager_id",),
+            target_table="employees",
+            target_columns=("id",),
+            is_nullable=True,
+        )
+
+        employees_table = Table(
+            name="employees",
+            schema="public",
+            columns=[],
+            primary_key=("id",),
+            foreign_keys=[],
+        )
+
+        schema = SchemaGraph(tables={"employees": employees_table}, edges=[fk])
+
+        rows = [
+            {"id": 1, "name": "Alice", "manager_id": 2},
+            {"id": 2, "name": "Bob", "manager_id": 1},
+            {"id": 3, "name": "Charlie", "manager_id": None},
+        ]
+
+        # Non-chunked
+        expected = build_deferred_updates([fk], {"employees": rows}, schema)
+
+        # Chunked — split rows into multiple small chunks
+        def chunk_iter():
+            yield [rows[0]]
+            yield [rows[1], rows[2]]
+
+        chunked_result = build_deferred_updates_chunked(
+            [fk], schema, {"employees": chunk_iter()}
+        )
+
+        assert len(chunked_result) == len(expected)
+        for a, b in zip(expected, chunked_result):
+            assert a.table == b.table
+            assert a.pk_columns == b.pk_columns
+            assert a.pk_values == b.pk_values
+            assert a.fk_column == b.fk_column
+            assert a.fk_value == b.fk_value
+
+    def test_skips_null_fk_values(self):
+        """Chunked variant should skip NULL FK values like the original."""
+        fk = ForeignKey(
+            name="fk_manager",
+            source_table="employees",
+            source_columns=("manager_id",),
+            target_table="employees",
+            target_columns=("id",),
+            is_nullable=True,
+        )
+
+        employees_table = Table(
+            name="employees",
+            schema="public",
+            columns=[],
+            primary_key=("id",),
+            foreign_keys=[],
+        )
+
+        schema = SchemaGraph(tables={"employees": employees_table}, edges=[fk])
+
+        def chunk_iter():
+            yield [
+                {"id": 1, "name": "Alice", "manager_id": None},
+                {"id": 2, "name": "Bob", "manager_id": 1},
+            ]
+
+        updates = build_deferred_updates_chunked(
+            [fk], schema, {"employees": chunk_iter()}
+        )
+
+        assert len(updates) == 1
+        assert updates[0].pk_values == (2,)
+        assert updates[0].fk_value == 1
+
+    def test_empty_iterator(self):
+        """Chunked variant handles empty iterator."""
+        fk = ForeignKey(
+            name="fk_manager",
+            source_table="employees",
+            source_columns=("manager_id",),
+            target_table="employees",
+            target_columns=("id",),
+            is_nullable=True,
+        )
+
+        employees_table = Table(
+            name="employees",
+            schema="public",
+            columns=[],
+            primary_key=("id",),
+            foreign_keys=[],
+        )
+
+        schema = SchemaGraph(tables={"employees": employees_table}, edges=[fk])
+
+        def chunk_iter():
+            return iter([])
+
+        updates = build_deferred_updates_chunked(
+            [fk], schema, {"employees": chunk_iter()}
+        )
+
+        assert updates == []
+
+    def test_missing_table_in_iterators(self):
+        """Chunked variant handles missing table gracefully."""
+        fk = ForeignKey(
+            name="fk_manager",
+            source_table="employees",
+            source_columns=("manager_id",),
+            target_table="employees",
+            target_columns=("id",),
+            is_nullable=True,
+        )
+
+        employees_table = Table(
+            name="employees",
+            schema="public",
+            columns=[],
+            primary_key=("id",),
+            foreign_keys=[],
+        )
+
+        schema = SchemaGraph(tables={"employees": employees_table}, edges=[fk])
+
+        # No iterator for the table
+        updates = build_deferred_updates_chunked([fk], schema, {})
+
+        assert updates == []
 
 
 class TestCycleInfo:

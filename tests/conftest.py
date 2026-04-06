@@ -305,7 +305,9 @@ class MockAdapter(DatabaseAdapter):
             fk_tuple = tuple(row[col] for col in fk_cols)
             if fk_tuple in target_pk_values:
                 pk_tuple = tuple(row[col] for col in pk_cols)
-                result.add(pk_tuple)
+                # Filter out NULL values (nullable FKs)
+                if None not in pk_tuple:
+                    result.add(pk_tuple)
 
         return result
 

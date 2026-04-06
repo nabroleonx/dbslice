@@ -133,7 +133,7 @@ class TestCSVGenerator:
         assert "id,user_id,total" in orders_lines[0]
 
     def test_format_value_none(self, generator):
-        assert generator._format_value(None) == ""
+        assert generator._format_value(None) == "\\N"
 
     def test_format_value_bool(self, generator):
         assert generator._format_value(True) == "true"
@@ -307,7 +307,7 @@ class TestCSVGenerator:
         reader = csv.DictReader(csv_output.strip().split("\n"))
         rows = list(reader)
 
-        assert rows[0]["name"] == ""  # NULL becomes empty string in CSV
+        assert rows[0]["name"] == "\\N"  # NULL uses \N sentinel (PostgreSQL COPY convention)
 
     def test_write_to_file_single_mode(self, generator, sample_tables_schema, tmp_path):
         tables_data = {

@@ -187,10 +187,12 @@ def validate_column_name(column: str) -> None:
 
 def validate_where_clause(where_clause: str) -> None:
     """
-    Validate a WHERE clause for basic safety.
+    Validate a WHERE clause for safety against SQL injection.
 
-    Note: This is basic validation. SQL injection protection should also
-    be handled by using parameterized queries in the database layer.
+    Delegates to the comprehensive implementation in ``config.validate_where_clause``
+    which handles Unicode normalization, quote stripping, dollar-quoting, type casts,
+    and dangerous PostgreSQL functions.  This wrapper adds a length check and converts
+    the exception type so callers that expect ``SeedValidationError`` are unaffected.
 
     Args:
         where_clause: The WHERE clause to validate
@@ -211,30 +213,16 @@ def validate_where_clause(where_clause: str) -> None:
             f"WHERE clause too long (max {MAX_WHERE_CLAUSE_LENGTH} characters)",
         )
 
-    if ";" in where_clause:
+    from dbslice.config import validate_where_clause as _config_validate
+    from dbslice.exceptions import InsecureWhereClauseError
+
+    try:
+        _config_validate(where_clause)
+    except InsecureWhereClauseError as exc:
         raise SeedValidationError(
             where_clause,
-            "WHERE clause contains potentially dangerous SQL patterns (semicolon found)",
-        )
-
-    dangerous_patterns = [
-        (r"\bdrop\s+table\b", "DROP TABLE"),
-        (r"\bdelete\s+from\b", "DELETE FROM"),
-        (r"\btruncate\b", "TRUNCATE"),
-        (r"\balter\s+table\b", "ALTER TABLE"),
-        (r"\bunion\s+select\b", "UNION SELECT"),
-        (r"\bexec\s*\(", "EXEC"),
-        (r"\bexecute\s*\(", "EXECUTE"),
-        (r"--", "SQL comment"),
-        (r"/\*", "SQL comment"),
-    ]
-
-    where_lower = where_clause.lower()
-    for pattern, name in dangerous_patterns:
-        if re.search(pattern, where_lower, re.IGNORECASE):
-            raise SeedValidationError(
-                where_clause, f"WHERE clause contains potentially dangerous SQL patterns ({name})"
-            )
+            f"WHERE clause contains potentially dangerous SQL patterns ({exc.dangerous_keyword})",
+        ) from exc
 
 
 def validate_seed_value(value: Any) -> None:

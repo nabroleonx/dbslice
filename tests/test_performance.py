@@ -225,7 +225,7 @@ def test_engine_passes_configured_batch_size_to_adapter(monkeypatch):
     captured: dict[str, int | None] = {}
 
     class FakePostgreSQLAdapter:
-        def __init__(self, batch_size=None, profiler=None, schema=None, allow_unsafe_where=False):
+        def __init__(self, batch_size=None, profiler=None, schema=None, allow_unsafe_where=False, statement_timeout_ms=0):
             captured["batch_size"] = batch_size
 
         def connect(self, url: str) -> None:
