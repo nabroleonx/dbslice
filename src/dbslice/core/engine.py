@@ -71,6 +71,11 @@ class ExtractionResult:
         deferred_updates: List of DeferredUpdate objects to restore broken FK values
         cycle_infos: List of CycleInfo objects describing detected cycles
         validation_result: Result of extraction validation (None if validation skipped)
+        was_streamed: True when the extraction wrote data directly to the output
+            file via the streaming engine. Downstream output handlers MUST NOT
+            re-write the file in this case — `tables` is intentionally empty
+            (data lives in the file) and re-generating SQL/JSON/CSV from it
+            would clobber the streamed content with an empty shell.
     """
 
     tables: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
@@ -84,6 +89,7 @@ class ExtractionResult:
     validation_result: ValidationResult | None = None
     profiler: QueryProfiler | None = None
     used_deferred_cycle_strategy: bool = False
+    was_streamed: bool = False
 
     def total_rows(self) -> int:
         """Get total number of extracted rows."""
@@ -1183,6 +1189,9 @@ class ExtractionEngine:
         result.cycle_infos = cycle_infos
         result.has_cycles = bool(cycle_infos)
         result.used_deferred_cycle_strategy = used_deferred_cycle_strategy
+        # Flag so downstream output handlers know not to re-write the file.
+        # Data has already been streamed to disk; result.tables is empty.
+        result.was_streamed = True
 
         return result
 

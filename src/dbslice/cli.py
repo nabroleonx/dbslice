@@ -522,6 +522,17 @@ def _generate_and_output_sql(
     """
     db_config = parse_database_url(database_url)
 
+    # Streaming mode wrote data directly to the output file during extraction.
+    # result.tables is empty in that case; regenerating SQL from it would
+    # produce an empty BEGIN/COMMIT shell and clobber the streamed content.
+    if result.was_streamed:
+        if out_file is not None and not no_progress:
+            console.print()
+            console.print(
+                f"[green]Wrote {result.total_rows()} rows to [bold]{out_file}[/bold][/green]"
+            )
+        return [out_file.resolve()] if out_file else []
+
     # Use schema from extraction (no reconnection needed)
     generator = SQLGenerator(
         db_type=db_config.db_type,
@@ -578,6 +589,17 @@ def _generate_and_output_json(
         console: Rich console for progress/status messages
         stdout_console: Console for JSON output to stdout
     """
+    # Streaming mode wrote data directly to the output file during extraction.
+    # result.tables is empty in that case; regenerating output from it would
+    # clobber the streamed content. See _generate_and_output_sql for context.
+    if result.was_streamed:
+        if out_file is not None and not no_progress:
+            console.print()
+            console.print(
+                f"[green]Wrote {result.total_rows()} rows to [bold]{out_file}[/bold][/green]"
+            )
+        return [out_file.resolve()] if out_file else []
+
     if json_mode == "auto":
         if out_file and out_file.is_dir():
             mode = "per-table"
@@ -670,6 +692,17 @@ def _generate_and_output_csv(
         console: Rich console for progress/status messages
         stdout_console: Console for CSV output to stdout
     """
+    # Streaming mode wrote data directly to the output file during extraction.
+    # result.tables is empty in that case; regenerating output from it would
+    # clobber the streamed content. See _generate_and_output_sql for context.
+    if result.was_streamed:
+        if out_file is not None and not no_progress:
+            console.print()
+            console.print(
+                f"[green]Wrote {result.total_rows()} rows to [bold]{out_file}[/bold][/green]"
+            )
+        return [out_file.resolve()] if out_file else []
+
     if csv_mode == "auto":
         if out_file and out_file.is_dir():
             mode = "per-table"
