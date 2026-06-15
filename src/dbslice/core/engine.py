@@ -1069,6 +1069,13 @@ class ExtractionEngine:
         Returns:
             True if streaming mode should be used, False otherwise
         """
+        # Streaming writes SQL statements directly to disk; it cannot produce
+        # JSON or CSV. Never stream for non-SQL formats, regardless of size or
+        # the --stream flag. The CLI rejects an explicit --stream for non-SQL
+        # up front; this guards the auto-threshold path and any direct callers.
+        if self.config.output_format != OutputFormat.SQL:
+            return False
+
         # Force streaming if explicitly enabled
         if self.config.stream:
             if self._has_row_limits():
@@ -1189,9 +1196,7 @@ class ExtractionEngine:
         result.cycle_infos = cycle_infos
         result.has_cycles = bool(cycle_infos)
         result.used_deferred_cycle_strategy = used_deferred_cycle_strategy
-        # Flag so downstream output handlers know not to re-write the file.
-        # Data has already been streamed to disk; result.tables is empty.
-        result.was_streamed = True
+        # was_streamed is set by stream_to_file (the source of truth).
 
         return result
 
