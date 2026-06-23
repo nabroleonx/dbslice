@@ -71,6 +71,11 @@ class ExtractionResult:
         deferred_updates: List of DeferredUpdate objects to restore broken FK values
         cycle_infos: List of CycleInfo objects describing detected cycles
         validation_result: Result of extraction validation (None if validation skipped)
+        was_streamed: True when the extraction wrote data directly to the output
+            file via the streaming engine. Downstream output handlers MUST NOT
+            re-write the file in this case — `tables` is intentionally empty
+            (data lives in the file) and re-generating SQL/JSON/CSV from it
+            would clobber the streamed content with an empty shell.
     """
 
     tables: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
@@ -84,6 +89,7 @@ class ExtractionResult:
     validation_result: ValidationResult | None = None
     profiler: QueryProfiler | None = None
     used_deferred_cycle_strategy: bool = False
+    was_streamed: bool = False
 
     def total_rows(self) -> int:
         """Get total number of extracted rows."""
@@ -1063,6 +1069,13 @@ class ExtractionEngine:
         Returns:
             True if streaming mode should be used, False otherwise
         """
+        # Streaming writes SQL statements directly to disk; it cannot produce
+        # JSON or CSV. Never stream for non-SQL formats, regardless of size or
+        # the --stream flag. The CLI rejects an explicit --stream for non-SQL
+        # up front; this guards the auto-threshold path and any direct callers.
+        if self.config.output_format != OutputFormat.SQL:
+            return False
+
         # Force streaming if explicitly enabled
         if self.config.stream:
             if self._has_row_limits():
@@ -1183,6 +1196,7 @@ class ExtractionEngine:
         result.cycle_infos = cycle_infos
         result.has_cycles = bool(cycle_infos)
         result.used_deferred_cycle_strategy = used_deferred_cycle_strategy
+        # was_streamed is set by stream_to_file (the source of truth).
 
         return result
 

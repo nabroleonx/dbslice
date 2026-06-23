@@ -289,6 +289,30 @@ def test_streaming_mode_forced(sample_schema):
     assert engine._should_use_streaming(100)
 
 
+def test_streaming_disabled_for_non_sql_output(sample_schema):
+    """Streaming writes SQL only; non-SQL output must never auto-stream or be
+    forced into streaming, regardless of size or the --stream flag."""
+    from dbslice.config import OutputFormat
+
+    for fmt in (OutputFormat.JSON, OutputFormat.CSV):
+        forced = ExtractConfig(
+            database_url="test://localhost/test",
+            seeds=[SeedSpec.parse("users.id=1")],
+            stream=True,
+            output_format=fmt,
+            output_file="/tmp/test.out",
+        )
+        assert not ExtractionEngine(forced)._should_use_streaming(100000)
+
+        auto = ExtractConfig(
+            database_url="test://localhost/test",
+            seeds=[SeedSpec.parse("users.id=1")],
+            output_format=fmt,
+            output_file="/tmp/test.out",
+        )
+        assert not ExtractionEngine(auto)._should_use_streaming(100000)
+
+
 def test_streaming_disabled_when_row_limits_configured():
     """Row limiting requires in-memory closure, so streaming must be disabled."""
     config = ExtractConfig(
@@ -758,3 +782,83 @@ def test_streaming_requires_output_file(sample_schema):
     # The ValueError is raised in _do_extract when it tries to start streaming
     # without an output file.
     assert engine._should_use_streaming(100000)
+
+
+def test_streaming_output_not_clobbered_by_output_handler(sample_schema, tmp_path):
+    """
+    Regression test for the real streaming path: stream_to_file writes SQL
+    directly to disk and returns a result with was_streamed=True and an empty
+    tables dict. _handle_output_format must then short-circuit instead of
+    regenerating SQL from the empty tables, which would clobber the streamed
+    file with an empty BEGIN/COMMIT shell.
+
+    This drives the actual engine + dispatcher (not a hand-built result), so it
+    also proves the streaming path sets was_streamed.
+
+    See https://github.com/nabroleonx/dbslice/issues/8.
+    """
+    import rich.console
+
+    from dbslice.cli import _handle_output_format
+    from dbslice.config import OutputFormat
+
+    data = {
+        "users": [
+            {"id": 1, "email": "alice@example.com", "name": "Alice"},
+            {"id": 2, "email": "bob@example.com", "name": "Bob"},
+        ],
+    }
+    adapter = ChunkedMockAdapter(sample_schema, data)
+    adapter.connect("test://localhost/test")
+
+    out_file = tmp_path / "streamed.sql"
+    config = ExtractConfig(
+        database_url="test://localhost/test",
+        seeds=[SeedSpec.parse("users.id=1")],
+        output_format=OutputFormat.SQL,
+        output_file=str(out_file),
+        streaming_chunk_size=1,
+    )
+
+    engine = StreamingExtractionEngine(
+        config=config,
+        adapter=adapter,
+        schema=sample_schema,
+        records={"users": {(1,), (2,)}},
+        insert_order=["users"],
+        broken_fks=[],
+        deferred_updates=[],
+        db_type=DatabaseType.POSTGRESQL,
+        chunk_size=1,
+    )
+
+    # Real streaming path: writes the file and sets was_streamed at the source.
+    result = engine.stream_to_file(str(out_file))
+    assert result.was_streamed is True
+    assert result.tables == {}
+
+    streamed_content = out_file.read_text()
+    assert "INSERT INTO" in streamed_content
+
+    with open(os.devnull, "w") as devnull:
+        quiet = rich.console.Console(file=devnull, force_terminal=False)
+        returned = _handle_output_format(
+            output_format=OutputFormat.SQL,
+            result=result,
+            schema=sample_schema,
+            extract_config=config,
+            database_url="test://localhost/test",
+            out_file=out_file,
+            json_mode="auto",
+            json_pretty=False,
+            csv_mode="auto",
+            csv_delimiter=",",
+            no_progress=True,
+            console=quiet,
+            stdout_console=quiet,
+        )
+
+    # The streamed file must be byte-for-byte unchanged — not replaced with an
+    # empty structured shell.
+    assert out_file.read_text() == streamed_content
+    assert returned == [out_file.resolve()]

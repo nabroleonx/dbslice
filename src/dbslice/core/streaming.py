@@ -194,7 +194,9 @@ class StreamingExtractionEngine:
             f"Streamed {total_rows} rows from {len(self.stats)} tables to {output_file}",
         )
 
-        # Return result (with empty tables since we streamed to file)
+        # Return result (with empty tables since we streamed to file).
+        # was_streamed marks the source of truth: data lives in the file, so
+        # downstream output handlers must not regenerate output from `tables`.
         return ExtractionResult(
             tables={},  # Empty - data was written to file
             insert_order=self.insert_order,
@@ -204,6 +206,7 @@ class StreamingExtractionEngine:
             broken_fks=self.broken_fks,
             deferred_updates=self.deferred_updates,
             cycle_infos=[],
+            was_streamed=True,
         )
 
     def _stream_table(
