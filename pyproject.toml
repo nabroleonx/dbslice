@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "dbslice"
-version = "1.0.0"
+version = "1.0.1"
 description = "Extract minimal, referentially-intact database subsets for local development"
 readme = "README.md"
 license = "MIT"
@@ -38,6 +38,16 @@ dependencies = [
 [project.optional-dependencies]
 mysql = ["mysql-connector-python>=8.0.0"]
 
+[project.scripts]
+dbslice = "dbslice.cli:app"
+
+[project.urls]
+Homepage = "https://github.com/nabroleonx/dbslice"
+Documentation = "https://nabroleonx.github.io/dbslice/"
+Repository = "https://github.com/nabroleonx/dbslice"
+Issues = "https://github.com/nabroleonx/dbslice/issues"
+
+
 [dependency-groups]
 dev = [
     "pytest>=7.0.0",
@@ -49,15 +59,6 @@ dev = [
     "mkdocs-material>=9.5.0",
     "pre-commit>=3.0.0",
 ]
-
-[project.scripts]
-dbslice = "dbslice.cli:app"
-
-[project.urls]
-Homepage = "https://github.com/nabroleonx/dbslice"
-Documentation = "https://nabroleonx.github.io/dbslice/"
-Repository = "https://github.com/nabroleonx/dbslice"
-Issues = "https://github.com/nabroleonx/dbslice/issues"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/dbslice"]

@@ -1,6 +1,48 @@
 # CHANGELOG
 
 
+## v1.0.1 (2026-06-23)
+
+### Bug Fixes
+
+- Streaming output not clobbered by post-extraction output handler
+  ([#9](https://github.com/nabroleonx/dbslice/pull/9),
+  [`e5f99d8`](https://github.com/nabroleonx/dbslice/commit/e5f99d889941c38fcfffbabd8a9b2ed9f1862f63))
+
+* fix: streaming output not clobbered by post-extraction output handler
+
+In streaming mode, `_do_streaming_extract` writes data directly to the output file and returns an
+  `ExtractionResult` with an intentionally empty `tables` dict (data lives in the file, not in
+  memory). The CLI then called `_generate_and_output_sql` unconditionally, which regenerated SQL
+  from the empty `tables` and wrote the resulting `BEGIN; ... COMMIT;` shell back to the same path —
+  clobbering the streamed content.
+
+The bug is silent: dbslice logs `Wrote <N> rows to <path>` and exits 0, but the file is left as a
+  ~400-byte empty shell.
+
+Fix: add `was_streamed: bool` to `ExtractionResult`, set it to True in `_do_streaming_extract`, and
+  short-circuit the SQL/JSON/CSV output handlers when the flag is set. The streamed file is
+  preserved as-is.
+
+Closes #8.
+
+* fix: address review — reject non-SQL streaming up front, single output guard
+
+Streaming writes SQL directly to disk; it has no JSON/CSV path. Instead of defensively
+  short-circuiting every output handler (which would silently preserve SQL content under a
+  .json/.csv name), reject the unsupported combo:
+
+- _should_use_streaming() returns False for any non-SQL output_format, so the auto-threshold path
+  never streams SQL into a JSON/CSV file. (This was a latent bug: the gate keyed only on row count +
+  output_file, not format.) - CLI rejects an explicit --stream for non-SQL output before extraction.
+  - Consolidate the three per-handler streamed-result skips into one guard in
+  _handle_output_format(); only SQL reaches it now. - Set was_streamed=True at the source of truth
+  (StreamingExtractionEngine .stream_to_file) so direct callers and the CLI see consistent metadata;
+  drop the redundant wrapper assignment. - Regression test now drives the real streaming engine
+  through _handle_output_format and asserts the streamed file is byte-for-byte unchanged; add
+  _should_use_streaming format-gate test; fix devnull leak.
+
+
 ## v1.0.0 (2026-04-06)
 
 ### Bug Fixes
